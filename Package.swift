@@ -11,13 +11,34 @@ let package = Package(
             name: "MediaIO",
             targets: ["MediaIO"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.3"),
+    ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "MediaIO"),
+            name: "MediaIO",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log")
+            ],
+            sources: [
+                "Demux",
+                "FLV",
+                "ISO",
+                "Mux",
+                "Net",
+                "RTMP",
+                "Util",
+                "Extension"
+            ]),
         .testTarget(
             name: "MediaIOTests",
             dependencies: ["MediaIO"]),
+        .executableTarget(
+            name: "mio",
+            dependencies: [
+                .target(name: "MediaIO"),
+                .product(name: "Logging", package: "swift-log")
+            ]
+        )
     ]
 )
