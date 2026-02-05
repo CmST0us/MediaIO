@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-MediaIO is a pure Swift multimedia I/O framework focused on streaming protocols. It provides RTMP protocol support, AMF serialization, and binary data utilities for live streaming scenarios.
+MediaIO is a pure Swift multimedia protocol implementation framework. It aims to implement common multimedia protocols and container formats including RTMP, RTSP, RTP, FLV, MP4 and more, providing protocol-level parsing, serialization, muxing and demuxing capabilities.
 
 ## Build & Test
 
