@@ -114,8 +114,6 @@ extension AMF3Serializer: AMFSerializer {
             return serialize(Double(value))
         case let value as Float:
             return serialize(Double(value))
-        case let value as CGFloat:
-            return serialize(Double(value))
         case let value as Double:
             return serialize(Double(value))
         case let value as Date:
@@ -567,7 +565,7 @@ extension AMF3Serializer: AMFSerializer {
         if (ref & 0x01) == 0 {
             return try reference.getString(ref >> 1)
         }
-        let string: String = try readUTF8Bytes(length)
+        let string: String = try readUTF8Bytes(ref >> 1)
         reference.strings.append(string)
         return string
     }

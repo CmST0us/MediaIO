@@ -27,6 +27,8 @@ let package = Package(
                 "Mux",
                 "Net",
                 "RTMP",
+                "RTP",
+                "RTSP",
                 "Util",
                 "Extension"
             ]),
