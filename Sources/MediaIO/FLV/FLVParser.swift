@@ -2,16 +2,18 @@ import Foundation
 
 /// FLV File Header
 /// - seealso: FLV specification E.2
-struct FLVHeader {
-    static let size: Int = 9
-    static let signature: [UInt8] = [0x46, 0x4C, 0x56] // "FLV"
+public struct FLVHeader {
+    public static let size: Int = 9
+    public static let signature: [UInt8] = [0x46, 0x4C, 0x56] // "FLV"
 
-    var version: UInt8 = 1
-    var hasAudio: Bool = false
-    var hasVideo: Bool = false
-    var dataOffset: UInt32 = 9
+    public var version: UInt8 = 1
+    public var hasAudio: Bool = false
+    public var hasVideo: Bool = false
+    public var dataOffset: UInt32 = 9
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         var flags: UInt8 = 0
         if hasAudio { flags |= 0x04 }
         if hasVideo { flags |= 0x01 }
@@ -23,7 +25,7 @@ struct FLVHeader {
         return ba.data
     }
 
-    static func decode(from data: Data) throws -> FLVHeader {
+    public static func decode(from data: Data) throws -> FLVHeader {
         guard data.count >= FLVHeader.size else { throw FLVError.insufficientData }
         let ba = ByteArray(data: data)
         let sig = try ba.readBytes(3)
@@ -39,14 +41,14 @@ struct FLVHeader {
 }
 
 /// FLV Tag Type
-enum FLVTagType: UInt8 {
+public enum FLVTagType: UInt8 {
     case audio = 8
     case video = 9
     case scriptData = 18
 }
 
 /// FLV Audio Codec
-enum FLVAudioCodec: UInt8 {
+public enum FLVAudioCodec: UInt8 {
     case pcmPlatformEndian = 0
     case adpcm = 1
     case mp3 = 2
@@ -63,7 +65,7 @@ enum FLVAudioCodec: UInt8 {
 }
 
 /// FLV Audio Sample Rate
-enum FLVAudioSampleRate: UInt8 {
+public enum FLVAudioSampleRate: UInt8 {
     case rate5_5kHz = 0
     case rate11kHz = 1
     case rate22kHz = 2
@@ -71,7 +73,7 @@ enum FLVAudioSampleRate: UInt8 {
 }
 
 /// FLV Video Codec
-enum FLVVideoCodec: UInt8 {
+public enum FLVVideoCodec: UInt8 {
     case sorensonH263 = 2
     case screenVideo = 3
     case on2VP6 = 4
@@ -83,7 +85,7 @@ enum FLVVideoCodec: UInt8 {
 }
 
 /// FLV Video Frame Type
-enum FLVVideoFrameType: UInt8 {
+public enum FLVVideoFrameType: UInt8 {
     case keyframe = 1
     case interFrame = 2
     case disposableInterFrame = 3
@@ -92,30 +94,32 @@ enum FLVVideoFrameType: UInt8 {
 }
 
 /// FLV AAC Packet Type
-enum FLVAACPacketType: UInt8 {
+public enum FLVAACPacketType: UInt8 {
     case sequenceHeader = 0
     case raw = 1
 }
 
 /// FLV AVC Packet Type
-enum FLVAVCPacketType: UInt8 {
+public enum FLVAVCPacketType: UInt8 {
     case sequenceHeader = 0
     case nalu = 1
     case endOfSequence = 2
 }
 
 /// FLV Tag
-struct FLVTag {
-    static let headerSize: Int = 11
+public struct FLVTag {
+    public static let headerSize: Int = 11
 
-    var tagType: FLVTagType = .video
-    var dataSize: UInt32 = 0
+    public var tagType: FLVTagType = .video
+    public var dataSize: UInt32 = 0
     /// Timestamp in milliseconds
-    var timestamp: UInt32 = 0
-    var streamID: UInt32 = 0
-    var data: Data = Data()
+    public var timestamp: UInt32 = 0
+    public var streamID: UInt32 = 0
+    public var data: Data = Data()
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         let ba = ByteArray()
         ba.writeUInt8(tagType.rawValue)
         ba.writeUInt24(UInt32(data.count))
@@ -127,7 +131,7 @@ struct FLVTag {
         return ba.data
     }
 
-    static func decode(from data: Data, position: Int = 0) throws -> (tag: FLVTag, bytesRead: Int) {
+    public static func decode(from data: Data, position: Int = 0) throws -> (tag: FLVTag, bytesRead: Int) {
         guard data.count - position >= FLVTag.headerSize else { throw FLVError.insufficientData }
         let ba = ByteArray(data: Data(data[position...]))
         var tag = FLVTag()
@@ -147,14 +151,16 @@ struct FLVTag {
 }
 
 /// FLV audio tag header parser
-struct FLVAudioTagHeader {
-    var codec: FLVAudioCodec = .aac
-    var sampleRate: FLVAudioSampleRate = .rate44kHz
-    var sampleSize: UInt8 = 1 // 0=8-bit, 1=16-bit
-    var channels: UInt8 = 1   // 0=mono, 1=stereo
-    var aacPacketType: FLVAACPacketType = .raw
+public struct FLVAudioTagHeader {
+    public var codec: FLVAudioCodec = .aac
+    public var sampleRate: FLVAudioSampleRate = .rate44kHz
+    public var sampleSize: UInt8 = 1 // 0=8-bit, 1=16-bit
+    public var channels: UInt8 = 1   // 0=mono, 1=stereo
+    public var aacPacketType: FLVAACPacketType = .raw
 
-    static func decode(from data: Data) throws -> FLVAudioTagHeader {
+    public init() {}
+
+    public static func decode(from data: Data) throws -> FLVAudioTagHeader {
         guard !data.isEmpty else { throw FLVError.insufficientData }
         var header = FLVAudioTagHeader()
         let byte = data[0]
@@ -170,13 +176,15 @@ struct FLVAudioTagHeader {
 }
 
 /// FLV video tag header parser
-struct FLVVideoTagHeader {
-    var frameType: FLVVideoFrameType = .keyframe
-    var codec: FLVVideoCodec = .avc
-    var avcPacketType: FLVAVCPacketType = .nalu
-    var compositionTime: Int32 = 0
+public struct FLVVideoTagHeader {
+    public var frameType: FLVVideoFrameType = .keyframe
+    public var codec: FLVVideoCodec = .avc
+    public var avcPacketType: FLVAVCPacketType = .nalu
+    public var compositionTime: Int32 = 0
 
-    static func decode(from data: Data) throws -> FLVVideoTagHeader {
+    public init() {}
+
+    public static func decode(from data: Data) throws -> FLVVideoTagHeader {
         guard !data.isEmpty else { throw FLVError.insufficientData }
         var header = FLVVideoTagHeader()
         let byte = data[0]
@@ -193,16 +201,16 @@ struct FLVVideoTagHeader {
 }
 
 /// FLV file reader
-final class FLVReader {
+public final class FLVReader {
     private let data: Data
-    private(set) var header: FLVHeader?
+    public private(set) var header: FLVHeader?
     private var position: Int = 0
 
-    init(data: Data) {
+    public init(data: Data) {
         self.data = data
     }
 
-    func readHeader() throws -> FLVHeader {
+    public func readHeader() throws -> FLVHeader {
         let h = try FLVHeader.decode(from: data)
         header = h
         position = Int(h.dataOffset)
@@ -210,7 +218,7 @@ final class FLVReader {
     }
 
     /// Read next tag, skipping the previous tag size field
-    func readTag() throws -> FLVTag? {
+    public func readTag() throws -> FLVTag? {
         // Skip previous tag size (4 bytes)
         guard position + 4 <= data.count else { return nil }
         position += 4
@@ -222,10 +230,12 @@ final class FLVReader {
 }
 
 /// FLV file writer
-final class FLVWriter {
-    private(set) var data = Data()
+public final class FLVWriter {
+    public private(set) var data = Data()
 
-    func writeHeader(hasAudio: Bool, hasVideo: Bool) {
+    public init() {}
+
+    public func writeHeader(hasAudio: Bool, hasVideo: Bool) {
         var header = FLVHeader()
         header.hasAudio = hasAudio
         header.hasVideo = hasVideo
@@ -234,7 +244,7 @@ final class FLVWriter {
         data.append(ByteArray().writeUInt32(0).data)
     }
 
-    func writeTag(_ tag: FLVTag) {
+    public func writeTag(_ tag: FLVTag) {
         let tagData = tag.encode()
         data.append(tagData)
         // Previous tag size
@@ -242,7 +252,7 @@ final class FLVWriter {
     }
 }
 
-enum FLVError: Error {
+public enum FLVError: Error {
     case insufficientData
     case invalidSignature
     case invalidTagType

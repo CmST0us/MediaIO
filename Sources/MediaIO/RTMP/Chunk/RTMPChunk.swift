@@ -2,7 +2,7 @@ import Foundation
 
 /// RTMP Chunk Basic Header format type (fmt)
 /// - seealso: RTMP specification 5.3.1.1
-enum RTMPChunkHeaderType: UInt8 {
+public enum RTMPChunkHeaderType: UInt8 {
     /// Type 0: Full header (11 bytes)
     case full = 0x00
     /// Type 1: 7-byte header
@@ -15,11 +15,16 @@ enum RTMPChunkHeaderType: UInt8 {
 
 /// Basic header of an RTMP chunk
 /// - seealso: RTMP specification 5.3.1.1
-struct RTMPChunkBasicHeader {
-    var type: RTMPChunkHeaderType
-    var chunkStreamID: UInt16
+public struct RTMPChunkBasicHeader {
+    public var type: RTMPChunkHeaderType
+    public var chunkStreamID: UInt16
 
-    func encode() -> Data {
+    public init(type: RTMPChunkHeaderType, chunkStreamID: UInt16) {
+        self.type = type
+        self.chunkStreamID = chunkStreamID
+    }
+
+    public func encode() -> Data {
         let fmt = type.rawValue << 6
         if chunkStreamID >= 2 && chunkStreamID <= 63 {
             return Data([fmt | UInt8(chunkStreamID)])
@@ -31,7 +36,7 @@ struct RTMPChunkBasicHeader {
         }
     }
 
-    static func decode(from data: Data, position: Int) throws -> (header: RTMPChunkBasicHeader, bytesRead: Int) {
+    public static func decode(from data: Data, position: Int) throws -> (header: RTMPChunkBasicHeader, bytesRead: Int) {
         guard position < data.count else { throw ByteArray.Error.eof }
         let byte = data[position]
         let fmt = byte >> 6
@@ -55,29 +60,31 @@ struct RTMPChunkBasicHeader {
 
 /// Message header of an RTMP chunk
 /// - seealso: RTMP specification 5.3.1.2
-struct RTMPChunkMessageHeader {
-    var timestamp: UInt32 = 0
-    var messageLength: UInt32 = 0
-    var messageTypeID: UInt8 = 0
-    var messageStreamID: UInt32 = 0
+public struct RTMPChunkMessageHeader {
+    public var timestamp: UInt32 = 0
+    public var messageLength: UInt32 = 0
+    public var messageTypeID: UInt8 = 0
+    public var messageStreamID: UInt32 = 0
 
-    var hasExtendedTimestamp: Bool {
+    public var hasExtendedTimestamp: Bool {
         timestamp >= 0xFFFFFF
     }
+
+    public init() {}
 }
 
 /// An RTMP chunk
 /// - seealso: RTMP specification 5.3
-struct RTMPChunk {
-    static let defaultChunkSize: Int = 128
-    static let maxChunkSize: Int = 65536
+public struct RTMPChunk {
+    public static let defaultChunkSize: Int = 128
+    public static let maxChunkSize: Int = 65536
 
-    var basicHeader: RTMPChunkBasicHeader
-    var messageHeader: RTMPChunkMessageHeader
-    var data: Data
+    public var basicHeader: RTMPChunkBasicHeader
+    public var messageHeader: RTMPChunkMessageHeader
+    public var data: Data
 
     /// Encode a message into chunked data
-    static func encode(
+    public static func encode(
         message: RTMPMessage,
         chunkStreamID: UInt16,
         messageStreamID: UInt32,
@@ -145,16 +152,18 @@ struct RTMPChunk {
 }
 
 /// Reassembles RTMP chunks into complete messages
-final class RTMPChunkDecoder {
+public final class RTMPChunkDecoder {
     private var chunkSize: Int = RTMPChunk.defaultChunkSize
     private var lastHeaders: [UInt16: RTMPChunkMessageHeader] = [:]
     private var chunkBuffers: [UInt16: Data] = [:]
 
-    func setChunkSize(_ size: Int) {
+    public init() {}
+
+    public func setChunkSize(_ size: Int) {
         chunkSize = min(size, RTMPChunk.maxChunkSize)
     }
 
-    func decode(from data: Data) throws -> (messages: [(chunkStreamID: UInt16, header: RTMPChunkMessageHeader, payload: Data)], bytesConsumed: Int) {
+    public func decode(from data: Data) throws -> (messages: [(chunkStreamID: UInt16, header: RTMPChunkMessageHeader, payload: Data)], bytesConsumed: Int) {
         var messages: [(UInt16, RTMPChunkMessageHeader, Data)] = []
         var position = 0
 
@@ -225,7 +234,7 @@ final class RTMPChunkDecoder {
         return (messages, position)
     }
 
-    func reset() {
+    public func reset() {
         lastHeaders.removeAll()
         chunkBuffers.removeAll()
         chunkSize = RTMPChunk.defaultChunkSize

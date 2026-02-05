@@ -2,22 +2,28 @@ import Foundation
 
 /// MP4 Box (Atom) - the fundamental unit of an ISO base media file
 /// - seealso: ISO 14496-12
-struct MP4Box {
-    var type: String
-    var size: UInt64
-    var data: Data
+public struct MP4Box {
+    public var type: String
+    public var size: UInt64
+    public var data: Data
 
     /// Offset of this box in the file
-    var offset: UInt64 = 0
+    public var offset: UInt64 = 0
 
     /// Whether this box uses 64-bit extended size
-    var isLargeSize: Bool { size == 1 }
+    public var isLargeSize: Bool { size == 1 }
 
-    static let headerSize: Int = 8
-    static let largeHeaderSize: Int = 16
+    public static let headerSize: Int = 8
+    public static let largeHeaderSize: Int = 16
+
+    public init(type: String, size: UInt64, data: Data) {
+        self.type = type
+        self.size = size
+        self.data = data
+    }
 
     /// Encode box to data
-    func encode() -> Data {
+    public func encode() -> Data {
         let ba = ByteArray()
         let boxData = data
         let totalSize = UInt64(headerSize) + UInt64(boxData.count)
@@ -36,13 +42,20 @@ struct MP4Box {
 }
 
 /// MP4 Full Box (version + flags)
-struct MP4FullBox {
-    var type: String
-    var version: UInt8 = 0
-    var flags: UInt32 = 0 // 24-bit flags
-    var data: Data
+public struct MP4FullBox {
+    public var type: String
+    public var version: UInt8 = 0
+    public var flags: UInt32 = 0 // 24-bit flags
+    public var data: Data
 
-    func encode() -> Data {
+    public init(type: String, version: UInt8 = 0, flags: UInt32 = 0, data: Data) {
+        self.type = type
+        self.version = version
+        self.flags = flags
+        self.data = data
+    }
+
+    public func encode() -> Data {
         let ba = ByteArray()
         let innerData = Data([version,
                               UInt8((flags >> 16) & 0xFF),
@@ -57,20 +70,20 @@ struct MP4FullBox {
 }
 
 /// MP4 file reader - parses box structure
-final class MP4Reader {
+public final class MP4Reader {
     private let data: Data
 
-    init(data: Data) {
+    public init(data: Data) {
         self.data = data
     }
 
     /// Parse all top-level boxes
-    func readBoxes() throws -> [MP4Box] {
+    public func readBoxes() throws -> [MP4Box] {
         try readBoxes(from: data, offset: 0)
     }
 
     /// Parse boxes from a data range
-    func readBoxes(from data: Data, offset: UInt64) throws -> [MP4Box] {
+    public func readBoxes(from data: Data, offset: UInt64) throws -> [MP4Box] {
         var boxes: [MP4Box] = []
         var position: Int = 0
 
@@ -114,7 +127,7 @@ final class MP4Reader {
     }
 
     /// Recursively find a box by type path (e.g., "moov/trak/mdia")
-    func findBox(path: String) throws -> MP4Box? {
+    public func findBox(path: String) throws -> MP4Box? {
         let components = path.split(separator: "/").map(String.init)
         var currentData = data
         var currentOffset: UInt64 = 0
@@ -135,9 +148,11 @@ final class MP4Reader {
 }
 
 /// MP4 file writer - builds box structure
-final class MP4Writer {
+public final class MP4Writer {
+    public init() {}
+
     /// Create a container box that wraps child box data
-    static func containerBox(type: String, children: [Data]) -> Data {
+    public static func containerBox(type: String, children: [Data]) -> Data {
         let innerData = children.reduce(Data()) { $0 + $1 }
         let ba = ByteArray()
         let totalSize = UInt32(8 + innerData.count)
@@ -148,7 +163,7 @@ final class MP4Writer {
     }
 
     /// Create an ftyp box
-    static func ftypBox(majorBrand: String, minorVersion: UInt32, compatibleBrands: [String]) -> Data {
+    public static func ftypBox(majorBrand: String, minorVersion: UInt32, compatibleBrands: [String]) -> Data {
         let ba = ByteArray()
         let inner = ByteArray()
         inner.writeBytes(Data(majorBrand.utf8.prefix(4)))
@@ -164,7 +179,7 @@ final class MP4Writer {
     }
 
     /// Create an mvhd (movie header) box
-    static func mvhdBox(
+    public static func mvhdBox(
         timescale: UInt32,
         duration: UInt32,
         rate: UInt32 = 0x00010000,
@@ -205,7 +220,7 @@ final class MP4Writer {
     }
 
     /// Create an mdat box
-    static func mdatBox(data: Data) -> Data {
+    public static func mdatBox(data: Data) -> Data {
         let ba = ByteArray()
         let totalSize = UInt32(8 + data.count)
         ba.writeUInt32(totalSize)
@@ -216,19 +231,21 @@ final class MP4Writer {
 }
 
 /// Track information extracted from an MP4 file
-struct MP4TrackInfo {
-    var trackID: UInt32 = 0
-    var timescale: UInt32 = 0
-    var duration: UInt64 = 0
-    var mediaType: String = "" // "vide", "soun", "hint"
-    var codecType: String = "" // "avc1", "hev1", "mp4a"
-    var width: UInt16 = 0
-    var height: UInt16 = 0
-    var sampleRate: UInt32 = 0
-    var channelCount: UInt16 = 0
+public struct MP4TrackInfo {
+    public var trackID: UInt32 = 0
+    public var timescale: UInt32 = 0
+    public var duration: UInt64 = 0
+    public var mediaType: String = "" // "vide", "soun", "hint"
+    public var codecType: String = "" // "avc1", "hev1", "mp4a"
+    public var width: UInt16 = 0
+    public var height: UInt16 = 0
+    public var sampleRate: UInt32 = 0
+    public var channelCount: UInt16 = 0
+
+    public init() {}
 }
 
-enum MP4Error: Error {
+public enum MP4Error: Error {
     case invalidBoxType
     case insufficientData
     case invalidFormat

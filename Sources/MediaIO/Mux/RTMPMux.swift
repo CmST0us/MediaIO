@@ -1,24 +1,24 @@
 import Foundation
 
 /// Muxes FLV tags into RTMP messages for publishing
-final class RTMPMuxer {
-    static let audioChunkStreamID: UInt16 = 4
-    static let videoChunkStreamID: UInt16 = 6
-    static let dataChunkStreamID: UInt16 = 3
+public final class RTMPMuxer {
+    public static let audioChunkStreamID: UInt16 = 4
+    public static let videoChunkStreamID: UInt16 = 6
+    public static let dataChunkStreamID: UInt16 = 3
 
     private var chunkSize: Int = RTMPChunk.defaultChunkSize
-    private(set) var messageStreamID: UInt32 = 1
+    public private(set) var messageStreamID: UInt32 = 1
 
-    init(messageStreamID: UInt32 = 1, chunkSize: Int = RTMPChunk.defaultChunkSize) {
+    public init(messageStreamID: UInt32 = 1, chunkSize: Int = RTMPChunk.defaultChunkSize) {
         self.messageStreamID = messageStreamID
         self.chunkSize = chunkSize
     }
 
-    func setChunkSize(_ size: Int) {
+    public func setChunkSize(_ size: Int) {
         chunkSize = size
     }
 
-    func muxAudio(tag: FLVTag) -> Data {
+    public func muxAudio(tag: FLVTag) -> Data {
         let msg = RTMPAudioMessage()
         msg.timestamp = tag.timestamp
         msg.payload = tag.data
@@ -30,7 +30,7 @@ final class RTMPMuxer {
         )
     }
 
-    func muxVideo(tag: FLVTag) -> Data {
+    public func muxVideo(tag: FLVTag) -> Data {
         let msg = RTMPVideoMessage()
         msg.timestamp = tag.timestamp
         msg.payload = tag.data
@@ -42,7 +42,7 @@ final class RTMPMuxer {
         )
     }
 
-    func muxData(handlerName: String, arguments: [Any?] = []) -> Data {
+    public func muxData(handlerName: String, arguments: [Any?] = []) -> Data {
         let msg = RTMPDataMessage()
         msg.handlerName = handlerName
         msg.arguments = arguments

@@ -1,12 +1,14 @@
 import Foundation
 
-final class RTMPHandshake {
-    static let sigSize: Int = 1536
-    static let protocolVersion: UInt8 = 3
+public final class RTMPHandshake {
+    public static let sigSize: Int = 1536
+    public static let protocolVersion: UInt8 = 3
 
-    var timestamp: TimeInterval = 0
+    public var timestamp: TimeInterval = 0
 
-    var c0c1packet: Data {
+    public init() {}
+
+    public var c0c1packet: Data {
         let packet = ByteArray()
             .writeUInt8(RTMPHandshake.protocolVersion)
             .writeInt32(Int32(timestamp))
@@ -17,7 +19,7 @@ final class RTMPHandshake {
         return packet.data
     }
 
-    func c2packet(_ s0s1packet: Data) -> Data {
+    public func c2packet(_ s0s1packet: Data) -> Data {
         ByteArray()
             .writeBytes(s0s1packet.subdata(in: 1..<5))
             .writeInt32(Int32(Date().timeIntervalSince1970 - timestamp))
@@ -25,7 +27,7 @@ final class RTMPHandshake {
             .data
     }
 
-    func clear() {
+    public func clear() {
         timestamp = 0
     }
 }

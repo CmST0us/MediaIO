@@ -2,7 +2,7 @@ import Foundation
 
 /// RTMP Message Type IDs
 /// - seealso: RTMP specification 7.1
-enum RTMPMessageType: UInt8 {
+public enum RTMPMessageType: UInt8 {
     case setChunkSize = 1
     case abort = 2
     case acknowledgement = 3
@@ -21,7 +21,7 @@ enum RTMPMessageType: UInt8 {
 }
 
 /// User Control Event Types
-enum RTMPUserControlEventType: UInt16 {
+public enum RTMPUserControlEventType: UInt16 {
     case streamBegin = 0
     case streamEOF = 1
     case streamDry = 2
@@ -32,22 +32,24 @@ enum RTMPUserControlEventType: UInt16 {
 }
 
 /// Peer Bandwidth Limit Type
-enum RTMPBandwidthLimitType: UInt8 {
+public enum RTMPBandwidthLimitType: UInt8 {
     case hard = 0
     case soft = 1
     case dynamic = 2
 }
 
 /// Base RTMP Message
-class RTMPMessage {
-    var typeID: UInt8 { 0 }
-    var timestamp: UInt32 = 0
-    var streamID: UInt32 = 0
-    var payload: Data = Data()
+public class RTMPMessage {
+    public var typeID: UInt8 { 0 }
+    public var timestamp: UInt32 = 0
+    public var streamID: UInt32 = 0
+    public var payload: Data = Data()
 
-    func encode() -> Data { payload }
+    public init() {}
 
-    static func create(typeID: UInt8, payload: Data) -> RTMPMessage {
+    public func encode() -> Data { payload }
+
+    public static func create(typeID: UInt8, payload: Data) -> RTMPMessage {
         guard let type = RTMPMessageType(rawValue: typeID) else {
             let msg = RTMPMessage()
             msg.payload = payload
@@ -93,15 +95,15 @@ class RTMPMessage {
 // MARK: - Protocol Control Messages
 
 /// Set Chunk Size (Type 1)
-final class RTMPSetChunkSizeMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.setChunkSize.rawValue }
-    var chunkSize: UInt32 = UInt32(RTMPChunk.defaultChunkSize)
+public final class RTMPSetChunkSizeMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.setChunkSize.rawValue }
+    public var chunkSize: UInt32 = UInt32(RTMPChunk.defaultChunkSize)
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         ByteArray().writeUInt32(chunkSize & 0x7FFFFFFF).data
     }
 
-    static func decode(from data: Data) -> RTMPSetChunkSizeMessage {
+    public static func decode(from data: Data) -> RTMPSetChunkSizeMessage {
         let msg = RTMPSetChunkSizeMessage()
         if data.count >= 4 {
             msg.chunkSize = ((try? ByteArray(data: data).readUInt32()) ?? UInt32(RTMPChunk.defaultChunkSize)) & 0x7FFFFFFF
@@ -111,15 +113,15 @@ final class RTMPSetChunkSizeMessage: RTMPMessage {
 }
 
 /// Abort Message (Type 2)
-final class RTMPAbortMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.abort.rawValue }
-    var chunkStreamID: UInt32 = 0
+public final class RTMPAbortMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.abort.rawValue }
+    public var chunkStreamID: UInt32 = 0
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         ByteArray().writeUInt32(chunkStreamID).data
     }
 
-    static func decode(from data: Data) -> RTMPAbortMessage {
+    public static func decode(from data: Data) -> RTMPAbortMessage {
         let msg = RTMPAbortMessage()
         if data.count >= 4 { msg.chunkStreamID = (try? ByteArray(data: data).readUInt32()) ?? 0 }
         return msg
@@ -127,15 +129,15 @@ final class RTMPAbortMessage: RTMPMessage {
 }
 
 /// Acknowledgement (Type 3)
-final class RTMPAcknowledgementMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.acknowledgement.rawValue }
-    var sequenceNumber: UInt32 = 0
+public final class RTMPAcknowledgementMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.acknowledgement.rawValue }
+    public var sequenceNumber: UInt32 = 0
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         ByteArray().writeUInt32(sequenceNumber).data
     }
 
-    static func decode(from data: Data) -> RTMPAcknowledgementMessage {
+    public static func decode(from data: Data) -> RTMPAcknowledgementMessage {
         let msg = RTMPAcknowledgementMessage()
         if data.count >= 4 { msg.sequenceNumber = (try? ByteArray(data: data).readUInt32()) ?? 0 }
         return msg
@@ -143,15 +145,15 @@ final class RTMPAcknowledgementMessage: RTMPMessage {
 }
 
 /// Window Acknowledgement Size (Type 5)
-final class RTMPWindowAcknowledgementSizeMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.windowAcknowledgementSize.rawValue }
-    var size: UInt32 = 2500000
+public final class RTMPWindowAcknowledgementSizeMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.windowAcknowledgementSize.rawValue }
+    public var size: UInt32 = 2500000
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         ByteArray().writeUInt32(size).data
     }
 
-    static func decode(from data: Data) -> RTMPWindowAcknowledgementSizeMessage {
+    public static func decode(from data: Data) -> RTMPWindowAcknowledgementSizeMessage {
         let msg = RTMPWindowAcknowledgementSizeMessage()
         if data.count >= 4 { msg.size = (try? ByteArray(data: data).readUInt32()) ?? 2500000 }
         return msg
@@ -159,16 +161,16 @@ final class RTMPWindowAcknowledgementSizeMessage: RTMPMessage {
 }
 
 /// Set Peer Bandwidth (Type 6)
-final class RTMPSetPeerBandwidthMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.setPeerBandwidth.rawValue }
-    var size: UInt32 = 2500000
-    var limitType: RTMPBandwidthLimitType = .dynamic
+public final class RTMPSetPeerBandwidthMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.setPeerBandwidth.rawValue }
+    public var size: UInt32 = 2500000
+    public var limitType: RTMPBandwidthLimitType = .dynamic
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         ByteArray().writeUInt32(size).writeUInt8(limitType.rawValue).data
     }
 
-    static func decode(from data: Data) -> RTMPSetPeerBandwidthMessage {
+    public static func decode(from data: Data) -> RTMPSetPeerBandwidthMessage {
         let msg = RTMPSetPeerBandwidthMessage()
         if data.count >= 5 {
             let ba = ByteArray(data: data)
@@ -180,16 +182,16 @@ final class RTMPSetPeerBandwidthMessage: RTMPMessage {
 }
 
 /// User Control Message (Type 4)
-final class RTMPUserControlMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.userControl.rawValue }
-    var eventType: RTMPUserControlEventType = .streamBegin
-    var eventData: Data = Data()
+public final class RTMPUserControlMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.userControl.rawValue }
+    public var eventType: RTMPUserControlEventType = .streamBegin
+    public var eventData: Data = Data()
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         ByteArray().writeUInt16(eventType.rawValue).writeBytes(eventData).data
     }
 
-    static func decode(from data: Data) -> RTMPUserControlMessage {
+    public static func decode(from data: Data) -> RTMPUserControlMessage {
         let msg = RTMPUserControlMessage()
         if data.count >= 2 {
             let ba = ByteArray(data: data)
@@ -203,17 +205,17 @@ final class RTMPUserControlMessage: RTMPMessage {
 // MARK: - Command Messages
 
 /// RTMP Command Message (Type 20 AMF0 / Type 17 AMF3)
-final class RTMPCommandMessage: RTMPMessage {
-    var isAMF3: Bool = false
-    override var typeID: UInt8 {
+public final class RTMPCommandMessage: RTMPMessage {
+    public var isAMF3: Bool = false
+    public override var typeID: UInt8 {
         isAMF3 ? RTMPMessageType.commandAMF3.rawValue : RTMPMessageType.commandAMF0.rawValue
     }
-    var commandName: String = ""
-    var transactionID: Int = 0
-    var commandObject: ASObject? = nil
-    var arguments: [Any?] = []
+    public var commandName: String = ""
+    public var transactionID: Int = 0
+    public var commandObject: ASObject? = nil
+    public var arguments: [Any?] = []
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         let s = AMF0Serializer()
         s.serialize(commandName)
         s.serialize(Double(transactionID))
@@ -222,7 +224,7 @@ final class RTMPCommandMessage: RTMPMessage {
         return s.data
     }
 
-    static func decode(from data: Data, isAMF3: Bool) -> RTMPCommandMessage {
+    public static func decode(from data: Data, isAMF3: Bool) -> RTMPCommandMessage {
         let msg = RTMPCommandMessage()
         msg.isAMF3 = isAMF3
         let s = AMF0Serializer(data: data)
@@ -239,22 +241,22 @@ final class RTMPCommandMessage: RTMPMessage {
 // MARK: - Data Messages
 
 /// RTMP Data Message (Type 18 AMF0 / Type 15 AMF3)
-final class RTMPDataMessage: RTMPMessage {
-    var isAMF3: Bool = false
-    override var typeID: UInt8 {
+public final class RTMPDataMessage: RTMPMessage {
+    public var isAMF3: Bool = false
+    public override var typeID: UInt8 {
         isAMF3 ? RTMPMessageType.dataAMF3.rawValue : RTMPMessageType.dataAMF0.rawValue
     }
-    var handlerName: String = ""
-    var arguments: [Any?] = []
+    public var handlerName: String = ""
+    public var arguments: [Any?] = []
 
-    override func encode() -> Data {
+    public override func encode() -> Data {
         let s = AMF0Serializer()
         s.serialize(handlerName)
         for arg in arguments { s.serialize(arg) }
         return s.data
     }
 
-    static func decode(from data: Data, isAMF3: Bool) -> RTMPDataMessage {
+    public static func decode(from data: Data, isAMF3: Bool) -> RTMPDataMessage {
         let msg = RTMPDataMessage()
         msg.isAMF3 = isAMF3
         let s = AMF0Serializer(data: data)
@@ -269,11 +271,11 @@ final class RTMPDataMessage: RTMPMessage {
 // MARK: - Media Messages
 
 /// RTMP Audio Message (Type 8)
-final class RTMPAudioMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.audio.rawValue }
+public final class RTMPAudioMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.audio.rawValue }
 }
 
 /// RTMP Video Message (Type 9)
-final class RTMPVideoMessage: RTMPMessage {
-    override var typeID: UInt8 { RTMPMessageType.video.rawValue }
+public final class RTMPVideoMessage: RTMPMessage {
+    public override var typeID: UInt8 { RTMPMessageType.video.rawValue }
 }

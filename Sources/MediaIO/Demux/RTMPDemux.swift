@@ -1,12 +1,14 @@
 import Foundation
 
 /// Demuxes RTMP audio/video messages into FLV tags
-final class RTMPDemuxer {
-    var onAudioTag: ((FLVTag) -> Void)?
-    var onVideoTag: ((FLVTag) -> Void)?
-    var onScriptData: ((FLVTag) -> Void)?
+public final class RTMPDemuxer {
+    public var onAudioTag: ((FLVTag) -> Void)?
+    public var onVideoTag: ((FLVTag) -> Void)?
+    public var onScriptData: ((FLVTag) -> Void)?
 
-    func processMessage(_ message: RTMPMessage) {
+    public init() {}
+
+    public func processMessage(_ message: RTMPMessage) {
         switch message {
         case let msg as RTMPAudioMessage:
             var tag = FLVTag()

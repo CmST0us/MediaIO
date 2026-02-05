@@ -1,6 +1,6 @@
 import Foundation
 
-protocol ByteArrayConvertible {
+public protocol ByteArrayConvertible {
     var data: Data { get }
     var length: Int { get set }
     var position: Int { get set }
@@ -102,7 +102,7 @@ public class ByteArray: ByteArrayConvertible {
         self.data = data
     }
 
-    private(set) var data = Data()
+    public private(set) var data = Data()
 
     /// Specifies the length of buffer.
     public var length: Int {
@@ -326,7 +326,7 @@ public class ByteArray: ByteArrayConvertible {
         return self
     }
 
-    func readUTF8Bytes(_ length: Int) throws -> String {
+    public func readUTF8Bytes(_ length: Int) throws -> String {
         guard length <= bytesAvailable else {
             throw ByteArray.Error.eof
         }
@@ -339,11 +339,11 @@ public class ByteArray: ByteArrayConvertible {
     }
 
     @discardableResult
-    func writeUTF8Bytes(_ value: String) -> Self {
+    public func writeUTF8Bytes(_ value: String) -> Self {
         writeBytes(Data(value.utf8))
     }
 
-    func readBytes(_ length: Int) throws -> Data {
+    public func readBytes(_ length: Int) throws -> Data {
         guard length <= bytesAvailable else {
             throw ByteArray.Error.eof
         }
@@ -352,7 +352,7 @@ public class ByteArray: ByteArrayConvertible {
     }
 
     @discardableResult
-    func writeBytes(_ value: Data) -> Self {
+    public func writeBytes(_ value: Data) -> Self {
         if position == data.count {
             data.append(value)
             position = data.count

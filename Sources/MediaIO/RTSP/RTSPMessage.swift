@@ -2,7 +2,7 @@ import Foundation
 
 /// RTSP Methods
 /// - seealso: RFC 2326 Section 6.1
-enum RTSPMethod: String {
+public enum RTSPMethod: String {
     case DESCRIBE
     case ANNOUNCE
     case GET_PARAMETER
@@ -18,7 +18,7 @@ enum RTSPMethod: String {
 
 /// RTSP Status Codes
 /// - seealso: RFC 2326 Section 7.1.1
-enum RTSPStatusCode: Int {
+public enum RTSPStatusCode: Int {
     case `continue` = 100
     case ok = 200
     case created = 201
@@ -64,7 +64,7 @@ enum RTSPStatusCode: Int {
     case rtspVersionNotSupported = 505
     case optionNotSupported = 551
 
-    var reasonPhrase: String {
+    public var reasonPhrase: String {
         switch self {
         case .ok: return "OK"
         case .badRequest: return "Bad Request"
@@ -79,18 +79,20 @@ enum RTSPStatusCode: Int {
 }
 
 /// RTSP Transport parameters
-struct RTSPTransport {
-    var transportProtocol: String = "RTP"
-    var profile: String = "AVP"
-    var lowerTransport: String? = nil // "TCP" or "UDP" (default)
-    var unicast: Bool = true
-    var clientPortRange: (Int, Int)? = nil
-    var serverPortRange: (Int, Int)? = nil
-    var interleaved: (Int, Int)? = nil
-    var ssrc: String? = nil
+public struct RTSPTransport {
+    public var transportProtocol: String = "RTP"
+    public var profile: String = "AVP"
+    public var lowerTransport: String? = nil // "TCP" or "UDP" (default)
+    public var unicast: Bool = true
+    public var clientPortRange: (Int, Int)? = nil
+    public var serverPortRange: (Int, Int)? = nil
+    public var interleaved: (Int, Int)? = nil
+    public var ssrc: String? = nil
+
+    public init() {}
 
     /// Parse a Transport header value
-    static func parse(_ value: String) -> RTSPTransport {
+    public static func parse(_ value: String) -> RTSPTransport {
         var transport = RTSPTransport()
         let parts = value.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
 
@@ -125,7 +127,7 @@ struct RTSPTransport {
     }
 
     /// Serialize to Transport header value
-    func serialize() -> String {
+    public func serialize() -> String {
         var parts: [String] = []
         var proto = "\(transportProtocol)/\(profile)"
         if let lt = lowerTransport { proto += "/\(lt)" }
@@ -140,15 +142,15 @@ struct RTSPTransport {
 }
 
 /// RTSP Request
-struct RTSPRequest {
-    static let version = "RTSP/1.0"
+public struct RTSPRequest {
+    public static let version = "RTSP/1.0"
 
-    var method: RTSPMethod
-    var url: String
-    var headers: [(String, String)] = []
-    var body: Data? = nil
+    public var method: RTSPMethod
+    public var url: String
+    public var headers: [(String, String)] = []
+    public var body: Data? = nil
 
-    var cseq: Int {
+    public var cseq: Int {
         get {
             for (key, value) in headers where key == "CSeq" {
                 return Int(value) ?? 0
@@ -160,7 +162,12 @@ struct RTSPRequest {
         }
     }
 
-    mutating func setHeader(_ key: String, value: String) {
+    public init(method: RTSPMethod, url: String) {
+        self.method = method
+        self.url = url
+    }
+
+    public mutating func setHeader(_ key: String, value: String) {
         if let index = headers.firstIndex(where: { $0.0 == key }) {
             headers[index] = (key, value)
         } else {
@@ -168,12 +175,12 @@ struct RTSPRequest {
         }
     }
 
-    func getHeader(_ key: String) -> String? {
+    public func getHeader(_ key: String) -> String? {
         headers.first(where: { $0.0.lowercased() == key.lowercased() })?.1
     }
 
     /// Serialize to wire format
-    func serialize() -> Data {
+    public func serialize() -> Data {
         var lines: [String] = []
         lines.append("\(method.rawValue) \(url) \(RTSPRequest.version)")
         for (key, value) in headers {
@@ -192,7 +199,7 @@ struct RTSPRequest {
     }
 
     /// Parse from wire format
-    static func parse(from data: Data) throws -> RTSPRequest {
+    public static func parse(from data: Data) throws -> RTSPRequest {
         guard let text = String(data: data, encoding: .utf8) else {
             throw RTSPError.invalidMessage
         }
@@ -234,15 +241,15 @@ struct RTSPRequest {
 }
 
 /// RTSP Response
-struct RTSPResponse {
-    static let version = "RTSP/1.0"
+public struct RTSPResponse {
+    public static let version = "RTSP/1.0"
 
-    var statusCode: Int
-    var reasonPhrase: String
-    var headers: [(String, String)] = []
-    var body: Data? = nil
+    public var statusCode: Int
+    public var reasonPhrase: String
+    public var headers: [(String, String)] = []
+    public var body: Data? = nil
 
-    var cseq: Int {
+    public var cseq: Int {
         get {
             for (key, value) in headers where key == "CSeq" {
                 return Int(value) ?? 0
@@ -254,12 +261,12 @@ struct RTSPResponse {
         }
     }
 
-    init(statusCode: Int, reasonPhrase: String? = nil) {
+    public init(statusCode: Int, reasonPhrase: String? = nil) {
         self.statusCode = statusCode
         self.reasonPhrase = reasonPhrase ?? (RTSPStatusCode(rawValue: statusCode)?.reasonPhrase ?? "Unknown")
     }
 
-    mutating func setHeader(_ key: String, value: String) {
+    public mutating func setHeader(_ key: String, value: String) {
         if let index = headers.firstIndex(where: { $0.0 == key }) {
             headers[index] = (key, value)
         } else {
@@ -267,11 +274,11 @@ struct RTSPResponse {
         }
     }
 
-    func getHeader(_ key: String) -> String? {
+    public func getHeader(_ key: String) -> String? {
         headers.first(where: { $0.0.lowercased() == key.lowercased() })?.1
     }
 
-    func serialize() -> Data {
+    public func serialize() -> Data {
         var lines: [String] = []
         lines.append("\(RTSPResponse.version) \(statusCode) \(reasonPhrase)")
         for (key, value) in headers {
@@ -289,7 +296,7 @@ struct RTSPResponse {
         return result
     }
 
-    static func parse(from data: Data) throws -> RTSPResponse {
+    public static func parse(from data: Data) throws -> RTSPResponse {
         guard let text = String(data: data, encoding: .utf8) else {
             throw RTSPError.invalidMessage
         }
@@ -325,7 +332,7 @@ struct RTSPResponse {
     }
 }
 
-enum RTSPError: Error {
+public enum RTSPError: Error {
     case invalidMessage
     case invalidMethod
     case invalidStatusCode

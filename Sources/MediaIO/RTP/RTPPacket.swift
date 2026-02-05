@@ -1,11 +1,11 @@
 import Foundation
 
 /// RTP Protocol Version
-let kRTPVersion: UInt8 = 2
+public let kRTPVersion: UInt8 = 2
 
 /// Common RTP Payload Types
 /// - seealso: RFC 3551
-enum RTPPayloadType: UInt8 {
+public enum RTPPayloadType: UInt8 {
     case pcmu = 0
     case pcma = 8
     case g722 = 9
@@ -37,21 +37,23 @@ enum RTPPayloadType: UInt8 {
 /// |            contributing source (CSRC) identifiers             |
 /// |                             ....                              |
 /// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-struct RTPHeader {
-    var version: UInt8 = kRTPVersion
-    var padding: Bool = false
-    var hasExtension: Bool = false
-    var csrcCount: UInt8 = 0
-    var marker: Bool = false
-    var payloadType: UInt8 = 0
-    var sequenceNumber: UInt16 = 0
-    var timestamp: UInt32 = 0
-    var ssrc: UInt32 = 0
-    var csrc: [UInt32] = []
+public struct RTPHeader {
+    public var version: UInt8 = kRTPVersion
+    public var padding: Bool = false
+    public var hasExtension: Bool = false
+    public var csrcCount: UInt8 = 0
+    public var marker: Bool = false
+    public var payloadType: UInt8 = 0
+    public var sequenceNumber: UInt16 = 0
+    public var timestamp: UInt32 = 0
+    public var ssrc: UInt32 = 0
+    public var csrc: [UInt32] = []
 
-    static let fixedSize: Int = 12
+    public static let fixedSize: Int = 12
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         let ba = ByteArray()
         var byte0: UInt8 = (version & 0x03) << 6
         if padding { byte0 |= 0x20 }
@@ -73,7 +75,7 @@ struct RTPHeader {
         return ba.data
     }
 
-    static func decode(from data: Data) throws -> (header: RTPHeader, bytesRead: Int) {
+    public static func decode(from data: Data) throws -> (header: RTPHeader, bytesRead: Int) {
         guard data.count >= RTPHeader.fixedSize else { throw RTPError.insufficientData }
         let ba = ByteArray(data: data)
 
@@ -106,11 +108,16 @@ struct RTPHeader {
 
 /// RTP Header Extension
 /// - seealso: RFC 3550 Section 5.3.1
-struct RTPHeaderExtension {
-    var profile: UInt16 = 0
-    var data: Data = Data()
+public struct RTPHeaderExtension {
+    public var profile: UInt16 = 0
+    public var data: Data = Data()
 
-    func encode() -> Data {
+    public init(profile: UInt16 = 0, data: Data = Data()) {
+        self.profile = profile
+        self.data = data
+    }
+
+    public func encode() -> Data {
         let ba = ByteArray()
         ba.writeUInt16(profile)
         let lengthInWords = UInt16((data.count + 3) / 4)
@@ -124,7 +131,7 @@ struct RTPHeaderExtension {
         return ba.data
     }
 
-    static func decode(from data: Data) throws -> (ext: RTPHeaderExtension, bytesRead: Int) {
+    public static func decode(from data: Data) throws -> (ext: RTPHeaderExtension, bytesRead: Int) {
         guard data.count >= 4 else { throw RTPError.insufficientData }
         let ba = ByteArray(data: data)
         var ext = RTPHeaderExtension()
@@ -138,12 +145,14 @@ struct RTPHeaderExtension {
 }
 
 /// A complete RTP packet
-struct RTPPacket {
-    var header: RTPHeader = RTPHeader()
-    var headerExtension: RTPHeaderExtension? = nil
-    var payload: Data = Data()
+public struct RTPPacket {
+    public var header: RTPHeader = RTPHeader()
+    public var headerExtension: RTPHeaderExtension? = nil
+    public var payload: Data = Data()
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         var result = header.encode()
         if let ext = headerExtension {
             result.append(ext.encode())
@@ -152,7 +161,7 @@ struct RTPPacket {
         return result
     }
 
-    static func decode(from data: Data) throws -> RTPPacket {
+    public static func decode(from data: Data) throws -> RTPPacket {
         let (header, headerBytes) = try RTPHeader.decode(from: data)
         var offset = headerBytes
         var packet = RTPPacket()
@@ -178,18 +187,18 @@ struct RTPPacket {
 }
 
 /// RTP packet builder for sending
-final class RTPPacketBuilder {
+public final class RTPPacketBuilder {
     private var sequenceNumber: UInt16
-    let ssrc: UInt32
-    let payloadType: UInt8
+    public let ssrc: UInt32
+    public let payloadType: UInt8
 
-    init(ssrc: UInt32, payloadType: UInt8, initialSequence: UInt16 = 0) {
+    public init(ssrc: UInt32, payloadType: UInt8, initialSequence: UInt16 = 0) {
         self.ssrc = ssrc
         self.payloadType = payloadType
         self.sequenceNumber = initialSequence
     }
 
-    func buildPacket(timestamp: UInt32, payload: Data, marker: Bool = false) -> RTPPacket {
+    public func buildPacket(timestamp: UInt32, payload: Data, marker: Bool = false) -> RTPPacket {
         var packet = RTPPacket()
         packet.header.ssrc = ssrc
         packet.header.payloadType = payloadType
@@ -202,7 +211,7 @@ final class RTPPacketBuilder {
     }
 }
 
-enum RTPError: Error {
+public enum RTPError: Error {
     case insufficientData
     case invalidVersion
     case invalidPacket

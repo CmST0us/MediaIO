@@ -1,22 +1,22 @@
 import Foundation
 
 /// RTSP Session manages the RTSP request/response flow
-final class RTSPSession {
-    private(set) var sessionID: String?
-    private(set) var url: String = ""
+public final class RTSPSession {
+    public private(set) var sessionID: String?
+    public private(set) var url: String = ""
     private var cseq: Int = 0
-    private(set) var state: RTSPSessionState = .idle
+    public private(set) var state: RTSPSessionState = .idle
 
     /// Supported methods from OPTIONS response
-    private(set) var supportedMethods: [RTSPMethod] = []
+    public private(set) var supportedMethods: [RTSPMethod] = []
 
     /// SDP content from DESCRIBE response
-    private(set) var sdpContent: String?
+    public private(set) var sdpContent: String?
 
     /// Transport info from SETUP response
-    private(set) var transport: RTSPTransport?
+    public private(set) var transport: RTSPTransport?
 
-    enum RTSPSessionState {
+    public enum RTSPSessionState {
         case idle
         case optionsSent
         case described
@@ -27,8 +27,10 @@ final class RTSPSession {
         case teardown
     }
 
+    public init() {}
+
     /// Create an OPTIONS request
-    func createOptionsRequest(url: String) -> RTSPRequest {
+    public func createOptionsRequest(url: String) -> RTSPRequest {
         self.url = url
         cseq += 1
         var request = RTSPRequest(method: .OPTIONS, url: url)
@@ -39,7 +41,7 @@ final class RTSPSession {
     }
 
     /// Create a DESCRIBE request
-    func createDescribeRequest() -> RTSPRequest {
+    public func createDescribeRequest() -> RTSPRequest {
         cseq += 1
         var request = RTSPRequest(method: .DESCRIBE, url: url)
         request.cseq = cseq
@@ -49,7 +51,7 @@ final class RTSPSession {
     }
 
     /// Create a SETUP request
-    func createSetupRequest(trackURL: String, transport: RTSPTransport) -> RTSPRequest {
+    public func createSetupRequest(trackURL: String, transport: RTSPTransport) -> RTSPRequest {
         cseq += 1
         var request = RTSPRequest(method: .SETUP, url: trackURL)
         request.cseq = cseq
@@ -62,7 +64,7 @@ final class RTSPSession {
     }
 
     /// Create a PLAY request
-    func createPlayRequest(range: String = "npt=0.000-") -> RTSPRequest {
+    public func createPlayRequest(range: String = "npt=0.000-") -> RTSPRequest {
         cseq += 1
         var request = RTSPRequest(method: .PLAY, url: url)
         request.cseq = cseq
@@ -75,7 +77,7 @@ final class RTSPSession {
     }
 
     /// Create a PAUSE request
-    func createPauseRequest() -> RTSPRequest {
+    public func createPauseRequest() -> RTSPRequest {
         cseq += 1
         var request = RTSPRequest(method: .PAUSE, url: url)
         request.cseq = cseq
@@ -87,7 +89,7 @@ final class RTSPSession {
     }
 
     /// Create a TEARDOWN request
-    func createTeardownRequest() -> RTSPRequest {
+    public func createTeardownRequest() -> RTSPRequest {
         cseq += 1
         var request = RTSPRequest(method: .TEARDOWN, url: url)
         request.cseq = cseq
@@ -99,7 +101,7 @@ final class RTSPSession {
     }
 
     /// Process an RTSP response
-    func processResponse(_ response: RTSPResponse, for method: RTSPMethod) {
+    public func processResponse(_ response: RTSPResponse, for method: RTSPMethod) {
         guard response.statusCode == 200 else { return }
 
         switch method {
@@ -142,7 +144,7 @@ final class RTSPSession {
         }
     }
 
-    func reset() {
+    public func reset() {
         sessionID = nil
         cseq = 0
         state = .idle

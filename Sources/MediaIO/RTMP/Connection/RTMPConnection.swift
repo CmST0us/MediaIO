@@ -1,7 +1,7 @@
 import Foundation
 
 /// RTMP Connection State
-enum RTMPConnectionState {
+public enum RTMPConnectionState {
     case idle
     case handshaking
     case handshakeDone
@@ -12,16 +12,16 @@ enum RTMPConnectionState {
 }
 
 /// RTMP Connection manages the lifecycle of an RTMP session
-final class RTMPConnection {
-    private(set) var state: RTMPConnectionState = .idle
-    private(set) var host: String = ""
-    private(set) var port: Int = 1935
-    private(set) var app: String = ""
-    private(set) var tcUrl: String = ""
-    private(set) var chunkSize: Int = RTMPChunk.defaultChunkSize
-    private(set) var windowAcknowledgementSize: UInt32 = 2500000
-    private(set) var totalBytesReceived: UInt64 = 0
-    private(set) var lastAcknowledgedBytes: UInt64 = 0
+public final class RTMPConnection {
+    public private(set) var state: RTMPConnectionState = .idle
+    public private(set) var host: String = ""
+    public private(set) var port: Int = 1935
+    public private(set) var app: String = ""
+    public private(set) var tcUrl: String = ""
+    public private(set) var chunkSize: Int = RTMPChunk.defaultChunkSize
+    public private(set) var windowAcknowledgementSize: UInt32 = 2500000
+    public private(set) var totalBytesReceived: UInt64 = 0
+    public private(set) var lastAcknowledgedBytes: UInt64 = 0
 
     private let handshake = RTMPHandshake()
     private let chunkDecoder = RTMPChunkDecoder()
@@ -29,8 +29,10 @@ final class RTMPConnection {
     private var transactionID: Int = 0
     private var transactions: [Int: String] = [:]
 
+    public init() {}
+
     /// Parse an RTMP URL: rtmp://host[:port]/app[/instance]
-    func parseURL(_ url: String) -> Bool {
+    public func parseURL(_ url: String) -> Bool {
         guard let components = URLComponents(string: url) else { return false }
         guard components.scheme == "rtmp" || components.scheme == "rtmps" else { return false }
         guard let h = components.host, !h.isEmpty else { return false }
@@ -43,17 +45,17 @@ final class RTMPConnection {
         return true
     }
 
-    func startHandshake() -> Data {
+    public func startHandshake() -> Data {
         state = .handshaking
         handshake.timestamp = Date().timeIntervalSince1970
         return handshake.c0c1packet
     }
 
-    func createC2Packet(s0s1Data: Data) -> Data {
+    public func createC2Packet(s0s1Data: Data) -> Data {
         handshake.c2packet(s0s1Data)
     }
 
-    func createConnectCommand() -> RTMPCommandMessage {
+    public func createConnectCommand() -> RTMPCommandMessage {
         let msg = RTMPCommandMessage()
         msg.commandName = "connect"
         transactionID += 1
@@ -73,7 +75,7 @@ final class RTMPConnection {
         return msg
     }
 
-    func createCreateStreamCommand() -> RTMPCommandMessage {
+    public func createCreateStreamCommand() -> RTMPCommandMessage {
         let msg = RTMPCommandMessage()
         msg.commandName = "createStream"
         transactionID += 1
@@ -82,7 +84,7 @@ final class RTMPConnection {
         return msg
     }
 
-    func createPublishCommand(streamName: String, type: String = "live") -> RTMPCommandMessage {
+    public func createPublishCommand(streamName: String, type: String = "live") -> RTMPCommandMessage {
         let msg = RTMPCommandMessage()
         msg.commandName = "publish"
         transactionID += 1
@@ -93,7 +95,7 @@ final class RTMPConnection {
         return msg
     }
 
-    func createPlayCommand(streamName: String) -> RTMPCommandMessage {
+    public func createPlayCommand(streamName: String) -> RTMPCommandMessage {
         let msg = RTMPCommandMessage()
         msg.commandName = "play"
         transactionID += 1
@@ -104,7 +106,7 @@ final class RTMPConnection {
         return msg
     }
 
-    func processReceivedData(_ data: Data) throws -> [RTMPMessage] {
+    public func processReceivedData(_ data: Data) throws -> [RTMPMessage] {
         receiveBuffer.append(data)
         totalBytesReceived += UInt64(data.count)
         switch state {
@@ -174,14 +176,14 @@ final class RTMPConnection {
         }
     }
 
-    func createAcknowledgementMessage() -> RTMPAcknowledgementMessage {
+    public func createAcknowledgementMessage() -> RTMPAcknowledgementMessage {
         let msg = RTMPAcknowledgementMessage()
         msg.sequenceNumber = UInt32(totalBytesReceived & 0xFFFFFFFF)
         lastAcknowledgedBytes = totalBytesReceived
         return msg
     }
 
-    func close() {
+    public func close() {
         state = .closed
         receiveBuffer.removeAll()
         chunkDecoder.reset()
@@ -193,7 +195,7 @@ final class RTMPConnection {
     }
 }
 
-enum RTMPConnectionError: Error {
+public enum RTMPConnectionError: Error {
     case handshakeFailed
     case invalidURL
     case connectionFailed

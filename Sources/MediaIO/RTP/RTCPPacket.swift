@@ -2,7 +2,7 @@ import Foundation
 
 /// RTCP Packet Types
 /// - seealso: RFC 3550 Section 6
-enum RTCPPacketType: UInt8 {
+public enum RTCPPacketType: UInt8 {
     case senderReport = 200      // SR
     case receiverReport = 201    // RR
     case sourceDescription = 202 // SDES
@@ -11,14 +11,16 @@ enum RTCPPacketType: UInt8 {
 }
 
 /// RTCP common header
-struct RTCPHeader {
-    var version: UInt8 = kRTPVersion
-    var padding: Bool = false
-    var count: UInt8 = 0 // Reception report count or subtype
-    var packetType: RTCPPacketType = .senderReport
-    var length: UInt16 = 0 // In 32-bit words minus one
+public struct RTCPHeader {
+    public var version: UInt8 = kRTPVersion
+    public var padding: Bool = false
+    public var count: UInt8 = 0 // Reception report count or subtype
+    public var packetType: RTCPPacketType = .senderReport
+    public var length: UInt16 = 0 // In 32-bit words minus one
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         let ba = ByteArray()
         var byte0: UInt8 = (version & 0x03) << 6
         if padding { byte0 |= 0x20 }
@@ -29,7 +31,7 @@ struct RTCPHeader {
         return ba.data
     }
 
-    static func decode(from data: Data) throws -> RTCPHeader {
+    public static func decode(from data: Data) throws -> RTCPHeader {
         guard data.count >= 4 else { throw RTPError.insufficientData }
         let ba = ByteArray(data: data)
         let byte0 = try ba.readUInt8()
@@ -48,15 +50,17 @@ struct RTCPHeader {
 
 /// RTCP Sender Report
 /// - seealso: RFC 3550 Section 6.4.1
-struct RTCPSenderReport {
-    var ssrc: UInt32 = 0
-    var ntpTimestamp: UInt64 = 0
-    var rtpTimestamp: UInt32 = 0
-    var senderPacketCount: UInt32 = 0
-    var senderOctetCount: UInt32 = 0
-    var reportBlocks: [RTCPReportBlock] = []
+public struct RTCPSenderReport {
+    public var ssrc: UInt32 = 0
+    public var ntpTimestamp: UInt64 = 0
+    public var rtpTimestamp: UInt32 = 0
+    public var senderPacketCount: UInt32 = 0
+    public var senderOctetCount: UInt32 = 0
+    public var reportBlocks: [RTCPReportBlock] = []
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         let ba = ByteArray()
         // Header
         var header = RTCPHeader()
@@ -82,11 +86,13 @@ struct RTCPSenderReport {
 
 /// RTCP Receiver Report
 /// - seealso: RFC 3550 Section 6.4.2
-struct RTCPReceiverReport {
-    var ssrc: UInt32 = 0
-    var reportBlocks: [RTCPReportBlock] = []
+public struct RTCPReceiverReport {
+    public var ssrc: UInt32 = 0
+    public var reportBlocks: [RTCPReportBlock] = []
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         let ba = ByteArray()
         var header = RTCPHeader()
         header.packetType = .receiverReport
@@ -106,16 +112,18 @@ struct RTCPReceiverReport {
 }
 
 /// RTCP Report Block (24 bytes)
-struct RTCPReportBlock {
-    var ssrc: UInt32 = 0
-    var fractionLost: UInt8 = 0
-    var cumulativePacketsLost: UInt32 = 0 // 24-bit
-    var extendedHighestSequence: UInt32 = 0
-    var interarrivalJitter: UInt32 = 0
-    var lastSR: UInt32 = 0
-    var delaySinceLastSR: UInt32 = 0
+public struct RTCPReportBlock {
+    public var ssrc: UInt32 = 0
+    public var fractionLost: UInt8 = 0
+    public var cumulativePacketsLost: UInt32 = 0 // 24-bit
+    public var extendedHighestSequence: UInt32 = 0
+    public var interarrivalJitter: UInt32 = 0
+    public var lastSR: UInt32 = 0
+    public var delaySinceLastSR: UInt32 = 0
 
-    func encode() -> Data {
+    public init() {}
+
+    public func encode() -> Data {
         let ba = ByteArray()
         ba.writeUInt32(ssrc)
         ba.writeUInt8(fractionLost)
@@ -127,7 +135,7 @@ struct RTCPReportBlock {
         return ba.data
     }
 
-    static func decode(from ba: ByteArray) throws -> RTCPReportBlock {
+    public static func decode(from ba: ByteArray) throws -> RTCPReportBlock {
         var block = RTCPReportBlock()
         block.ssrc = try ba.readUInt32()
         block.fractionLost = try ba.readUInt8()
