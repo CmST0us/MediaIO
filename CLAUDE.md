@@ -20,17 +20,23 @@ swift run mio
 ## Project Structure
 
 - `Sources/MediaIO/` - Main library target
-  - `RTMP/` - Real-Time Messaging Protocol implementation
-    - `AMF/` - AMF0/AMF3 serialization
-    - `Chunk/` - RTMP chunk protocol
-    - `Connection/` - RTMP connection handling
+  - `RTMP/` - Real-Time Messaging Protocol
+    - `AMF/` - AMF0/AMF3 serialization (ActionScript Message Format)
+    - `Chunk/` - Chunk encoder/decoder (4 header types, extended timestamp)
+    - `Connection/` - Connection state machine (handshake, connect, publish, play)
     - `Handshake/` - RTMP handshake (protocol version 3)
-    - `Message/` - RTMP message protocol
-  - `FLV/` - Flash Video format parser
-  - `ISO/` - MP4/ISO base media file format parser
-  - `Net/` - Socket/network layer
-  - `Demux/` - RTMP demultiplexing
-  - `Mux/` - RTMP multiplexing
+    - `Message/` - All message types (protocol control, command, data, audio, video)
+  - `RTP/` - Real-time Transport Protocol (RFC 3550)
+    - `RTPPacket.swift` - RTP header, extension, packet encode/decode, packet builder
+    - `RTCPPacket.swift` - RTCP Sender/Receiver Reports, Report Blocks
+  - `RTSP/` - Real Time Streaming Protocol (RFC 2326)
+    - `RTSPMessage.swift` - Request/response parsing, Transport header, status codes
+    - `RTSPSession.swift` - Session state machine (OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN)
+  - `FLV/` - Flash Video format (header, tags, audio/video tag headers, reader/writer)
+  - `ISO/` - MP4/ISO base media file format (box parser, box writer, track info)
+  - `Net/` - TCP socket abstraction (POSIX/Glibc)
+  - `Demux/` - RTMP message demuxer (RTMP -> FLV tags)
+  - `Mux/` - RTMP message muxer (FLV tags -> RTMP chunks)
   - `Util/` - Core utilities (ByteArray, DataBuffer, DataConvertible)
   - `Extension/` - Swift type extensions
 - `Sources/mio/` - Command-line executable
