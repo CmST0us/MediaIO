@@ -100,7 +100,7 @@ final class TrackMetadata {
 // MARK: - MP4 Moov Builder (shared logic)
 
 /// Builds the moov box from track metadata.
-/// Used by both in-memory MP4Muxer and file-based MP4FileWriter.
+/// Used internally by MP4FileWriter.
 enum MP4MoovBuilder {
 
     static func buildMoov(
@@ -412,79 +412,6 @@ enum MP4MoovBuilder {
     }
 }
 
-// MARK: - MP4 Muxer (in-memory, kept for backward compatibility)
-
-/// Muxes audio/video samples into a complete MP4 file in memory (ISO 14496-12).
-/// For large files, use ``MP4FileWriter`` instead.
-///
-/// Usage:
-/// ```
-/// let muxer = MP4Muxer()
-/// let videoTrackID = muxer.addVideoTrack(config: videoConfig)
-/// muxer.addSample(trackID: videoTrackID, sample: videoSample)
-/// let mp4Data = muxer.finalize()
-/// ```
-public final class MP4Muxer {
-    private var tracks: [TrackMetadata] = []
-    private var nextTrackID: UInt32 = 1
-    private var mdatContent = Data()
-    public var movieTimescale: UInt32 = 1000
-
-    public init() {}
-
-    @discardableResult
-    public func addVideoTrack(config: MP4VideoTrackConfig) -> UInt32 {
-        let track = TrackMetadata(trackID: nextTrackID, timescale: config.timescale, mediaType: "vide")
-        track.videoConfig = config
-        tracks.append(track)
-        nextTrackID += 1
-        return track.trackID
-    }
-
-    @discardableResult
-    public func addAudioTrack(config: MP4AudioTrackConfig) -> UInt32 {
-        let track = TrackMetadata(trackID: nextTrackID, timescale: config.timescale, mediaType: "soun")
-        track.audioConfig = config
-        tracks.append(track)
-        nextTrackID += 1
-        return track.trackID
-    }
-
-    public func addSample(trackID: UInt32, sample: MP4Sample) {
-        guard let track = tracks.first(where: { $0.trackID == trackID }) else { return }
-        let meta = SampleMetadata(
-            size: UInt32(sample.data.count),
-            duration: sample.duration,
-            compositionTimeOffset: sample.compositionTimeOffset,
-            isSync: sample.isSync,
-            mdatOffset: UInt64(mdatContent.count)
-        )
-        track.samples.append(meta)
-        mdatContent.append(sample.data)
-    }
-
-    /// Finalize and generate the complete MP4 file data.
-    /// Layout: ftyp + moov + mdat
-    public func finalize() -> Data {
-        let ftypData = MP4Writer.ftypBox(majorBrand: "isom", minorVersion: 512, compatibleBrands: ["isom", "iso2", "avc1", "mp41"])
-        let mdatHeaderSize: UInt64 = 8
-
-        // Build moov once to measure its size
-        let moovPlaceholder = MP4MoovBuilder.buildMoov(
-            tracks: tracks, nextTrackID: nextTrackID, movieTimescale: movieTimescale, mdatBodyOffset: 0
-        )
-        let mdatBodyOffset = UInt64(ftypData.count) + UInt64(moovPlaceholder.count) + mdatHeaderSize
-
-        // Rebuild moov with correct offsets
-        let moovData = MP4MoovBuilder.buildMoov(
-            tracks: tracks, nextTrackID: nextTrackID, movieTimescale: movieTimescale, mdatBodyOffset: mdatBodyOffset
-        )
-
-        let mdatData = MP4Writer.mdatBox(data: mdatContent)
-        return ftypData + moovData + mdatData
-    }
-}
-
 // MARK: - MP4 File Writer (streaming, disk-based)
 
 /// Streaming MP4 writer that writes sample data directly to disk.
@@ -600,7 +527,7 @@ public final class MP4FileWriter {
         )
         track.samples.append(meta)
 
-        // Write media data to file immediately - this is the key difference from MP4Muxer
+        // Write media data to file immediately - no in-memory accumulation
         fileHandle.write(sample.data)
         mdatContentSize += UInt64(sample.data.count)
     }

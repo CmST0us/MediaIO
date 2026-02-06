@@ -337,62 +337,67 @@ class mio {
             check("MP4", false)
         }
 
-        // MP4 Muxer tests
+        // MP4 FileWriter tests
         do {
-            let muxer = MP4Muxer()
-            let videoTrackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            let tmpPath = NSTemporaryDirectory() + "mio_selftest_\(ProcessInfo.processInfo.globallyUniqueString).mp4"
+            defer { try? FileManager.default.removeItem(atPath: tmpPath) }
+
+            let writer = try MP4FileWriter(path: tmpPath)
+            let videoTrackID = writer.addVideoTrack(config: MP4VideoTrackConfig(
                 width: 1920, height: 1080, timescale: 90000, codec: "avc1",
                 decoderConfig: Data([0x01, 0x64, 0x00, 0x1E])
             ))
-            let audioTrackID = muxer.addAudioTrack(config: MP4AudioTrackConfig(
+            let audioTrackID = writer.addAudioTrack(config: MP4AudioTrackConfig(
                 sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
                 decoderConfig: Data([0x12, 0x10])
             ))
-            check("MP4 Muxer: addVideoTrack", videoTrackID == 1)
-            check("MP4 Muxer: addAudioTrack", audioTrackID == 2)
+            check("MP4 Writer: addVideoTrack", videoTrackID == 1)
+            check("MP4 Writer: addAudioTrack", audioTrackID == 2)
 
-            // Add video samples (I, P, P)
-            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+            // Write video samples (I, P, P)
+            try writer.writeSample(trackID: videoTrackID, sample: MP4Sample(
                 data: Data(repeating: 0x11, count: 1000), duration: 3000, isSync: true
             ))
-            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+            try writer.writeSample(trackID: videoTrackID, sample: MP4Sample(
                 data: Data(repeating: 0x22, count: 500), duration: 3000, isSync: false
             ))
-            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+            try writer.writeSample(trackID: videoTrackID, sample: MP4Sample(
                 data: Data(repeating: 0x33, count: 700), duration: 3000, isSync: false
             ))
 
-            // Add audio samples
+            // Write audio samples
             for i in 0..<5 {
-                muxer.addSample(trackID: audioTrackID, sample: MP4Sample(
+                try writer.writeSample(trackID: audioTrackID, sample: MP4Sample(
                     data: Data(repeating: UInt8(0xA0 + i), count: 256), duration: 1024
                 ))
             }
 
-            let mp4Data = muxer.finalize()
-            check("MP4 Muxer: finalize size > 0", mp4Data.count > 0)
+            try writer.finalize()
+
+            let mp4Data = try Data(contentsOf: URL(fileURLWithPath: tmpPath))
+            check("MP4 Writer: finalize size > 0", mp4Data.count > 0)
 
             let reader = MP4Reader(data: mp4Data)
             let boxes = try reader.readBoxes()
-            check("MP4 Muxer: ftyp+moov+mdat", boxes.count == 3)
-            check("MP4 Muxer: ftyp box", boxes[0].type == "ftyp")
-            check("MP4 Muxer: moov box", boxes[1].type == "moov")
-            check("MP4 Muxer: mdat box", boxes[2].type == "mdat")
+            check("MP4 Writer: ftyp+mdat+moov", boxes.count == 3)
+            check("MP4 Writer: ftyp box", boxes[0].type == "ftyp")
+            check("MP4 Writer: mdat box", boxes[1].type == "mdat")
+            check("MP4 Writer: moov box", boxes[2].type == "moov")
 
             // Verify mdat contains all sample data
             let expectedMdatSize = 1000 + 500 + 700 + 5 * 256
-            check("MP4 Muxer: mdat data size", boxes[2].data.count == expectedMdatSize)
+            check("MP4 Writer: mdat data size", boxes[1].data.count == expectedMdatSize)
 
             // Verify moov has 2 traks
-            let moovReader = MP4Reader(data: boxes[1].data)
+            let moovReader = MP4Reader(data: boxes[2].data)
             let moovChildren = try moovReader.readBoxes()
-            check("MP4 Muxer: mvhd + 2 trak", moovChildren.count == 3)
+            check("MP4 Writer: mvhd + 2 trak", moovChildren.count == 3)
 
-            // Verify chunk offsets point to correct data
-            let trak = try reader.findBox(path: "moov/trak")
-            check("MP4 Muxer: trak exists", trak != nil)
+            // Verify trak exists
+            let trak = moovChildren.first(where: { $0.type == "trak" })
+            check("MP4 Writer: trak exists", trak != nil)
         } catch {
-            check("MP4 Muxer", false)
+            check("MP4 Writer", false)
         }
 
         // Demuxer/Muxer tests
