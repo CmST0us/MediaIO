@@ -49,6 +49,12 @@ class mio {
                 return
             }
             mp4Info(file: args[2])
+        case "mp4-mux":
+            if args.count < 3 {
+                logger.error("Usage: mio mp4-mux <output.mp4>")
+                return
+            }
+            mp4MuxDemo(output: args[2])
         default:
             // Treat as: mio <mp4-file> <rtmp-url>
             if args.count >= 3 {
@@ -68,6 +74,7 @@ class mio {
           mio publish <mp4-file> <rtmp-url>  Publish MP4 file via RTMP
           mio flv-info <flv-file>            Show FLV file information
           mio mp4-info <mp4-file>            Show MP4 file information
+          mio mp4-mux <output.mp4>           Demo: mux synthetic A/V into MP4
           mio <mp4-file> <rtmp-url>          Shorthand for publish
 
         Examples:
@@ -75,6 +82,7 @@ class mio {
           mio publish video.mp4 rtmp://localhost/live/stream
           mio flv-info input.flv
           mio mp4-info video.mp4
+          mio mp4-mux output.mp4
         """)
     }
 
@@ -329,6 +337,64 @@ class mio {
             check("MP4", false)
         }
 
+        // MP4 Muxer tests
+        do {
+            let muxer = MP4Muxer()
+            let videoTrackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+                width: 1920, height: 1080, timescale: 90000, codec: "avc1",
+                decoderConfig: Data([0x01, 0x64, 0x00, 0x1E])
+            ))
+            let audioTrackID = muxer.addAudioTrack(config: MP4AudioTrackConfig(
+                sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+                decoderConfig: Data([0x12, 0x10])
+            ))
+            check("MP4 Muxer: addVideoTrack", videoTrackID == 1)
+            check("MP4 Muxer: addAudioTrack", audioTrackID == 2)
+
+            // Add video samples (I, P, P)
+            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+                data: Data(repeating: 0x11, count: 1000), duration: 3000, isSync: true
+            ))
+            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+                data: Data(repeating: 0x22, count: 500), duration: 3000, isSync: false
+            ))
+            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+                data: Data(repeating: 0x33, count: 700), duration: 3000, isSync: false
+            ))
+
+            // Add audio samples
+            for i in 0..<5 {
+                muxer.addSample(trackID: audioTrackID, sample: MP4Sample(
+                    data: Data(repeating: UInt8(0xA0 + i), count: 256), duration: 1024
+                ))
+            }
+
+            let mp4Data = muxer.finalize()
+            check("MP4 Muxer: finalize size > 0", mp4Data.count > 0)
+
+            let reader = MP4Reader(data: mp4Data)
+            let boxes = try reader.readBoxes()
+            check("MP4 Muxer: ftyp+moov+mdat", boxes.count == 3)
+            check("MP4 Muxer: ftyp box", boxes[0].type == "ftyp")
+            check("MP4 Muxer: moov box", boxes[1].type == "moov")
+            check("MP4 Muxer: mdat box", boxes[2].type == "mdat")
+
+            // Verify mdat contains all sample data
+            let expectedMdatSize = 1000 + 500 + 700 + 5 * 256
+            check("MP4 Muxer: mdat data size", boxes[2].data.count == expectedMdatSize)
+
+            // Verify moov has 2 traks
+            let moovReader = MP4Reader(data: boxes[1].data)
+            let moovChildren = try moovReader.readBoxes()
+            check("MP4 Muxer: mvhd + 2 trak", moovChildren.count == 3)
+
+            // Verify chunk offsets point to correct data
+            let trak = try reader.findBox(path: "moov/trak")
+            check("MP4 Muxer: trak exists", trak != nil)
+        } catch {
+            check("MP4 Muxer", false)
+        }
+
         // Demuxer/Muxer tests
         do {
             let demuxer = RTMPDemuxer()
@@ -450,6 +516,141 @@ class mio {
             }
         } catch {
             logger.error("Error reading MP4: \(error)")
+        }
+    }
+
+    // MARK: - MP4 Mux Demo
+
+    static func mp4MuxDemo(output: String) {
+        print("MP4 Muxer Demo")
+        print("==============")
+        print("Generating synthetic MP4 file: \(output)")
+        print()
+
+        let muxer = MP4Muxer()
+
+        // Configure video track: 1280x720 @ 30fps, H.264
+        let videoConfig = MP4VideoTrackConfig(
+            width: 1280, height: 720, timescale: 90000, codec: "avc1",
+            decoderConfig: Data([
+                // Minimal AVCDecoderConfigurationRecord
+                0x01, // configurationVersion
+                0x64, // AVCProfileIndication (High)
+                0x00, // profile_compatibility
+                0x1E, // AVCLevelIndication (3.0)
+                0xFF, // lengthSizeMinusOne = 3 (4 bytes NALU length)
+                0xE1, // numOfSequenceParameterSets = 1
+                0x00, 0x04, // SPS length
+                0x67, 0x64, 0x00, 0x1E, // SPS data (placeholder)
+                0x01, // numOfPictureParameterSets
+                0x00, 0x02, // PPS length
+                0x68, 0xEF  // PPS data (placeholder)
+            ])
+        )
+        let videoTrackID = muxer.addVideoTrack(config: videoConfig)
+        print("  Video track ID: \(videoTrackID)")
+        print("  Resolution: \(videoConfig.width)x\(videoConfig.height)")
+        print("  Codec: \(videoConfig.codec)")
+        print("  Timescale: \(videoConfig.timescale)")
+
+        // Configure audio track: AAC-LC 44100Hz stereo
+        let audioConfig = MP4AudioTrackConfig(
+            sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+            decoderConfig: Data([0x12, 0x10]) // AAC-LC, 44100Hz, stereo
+        )
+        let audioTrackID = muxer.addAudioTrack(config: audioConfig)
+        print("  Audio track ID: \(audioTrackID)")
+        print("  Sample rate: \(audioConfig.sampleRate)")
+        print("  Channels: \(audioConfig.channelCount)")
+        print("  Codec: \(audioConfig.codec)")
+        print()
+
+        // Generate 2 seconds of video at 30fps (60 frames)
+        let videoDuration: UInt32 = 3000 // 90000 / 30 = 3000 ticks per frame
+        let gopSize = 30 // keyframe every 30 frames
+
+        print("  Generating video frames...")
+        for i in 0..<60 {
+            let isKeyframe = i % gopSize == 0
+            // Simulate H.264 NALUs: keyframes are larger
+            let frameSize = isKeyframe ? 5000 : 1500
+            let frameData = Data(repeating: UInt8(i & 0xFF), count: frameSize)
+
+            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+                data: frameData,
+                duration: videoDuration,
+                isSync: isKeyframe,
+                compositionTimeOffset: (i % 3 != 0) ? 3000 : 0
+            ))
+        }
+        print("    60 video frames (2 GOP, 2 keyframes)")
+
+        // Generate ~2 seconds of audio (1024 samples per frame @ 44100 Hz)
+        // 44100 / 1024 ≈ 43.07 frames per second, so ~86 frames for 2s
+        let audioFrameDuration: UInt32 = 1024
+
+        print("  Generating audio frames...")
+        for i in 0..<86 {
+            let frameData = Data(repeating: UInt8((i * 3) & 0xFF), count: 256)
+            muxer.addSample(trackID: audioTrackID, sample: MP4Sample(
+                data: frameData,
+                duration: audioFrameDuration
+            ))
+        }
+        print("    86 audio frames (~2 seconds)")
+        print()
+
+        // Finalize
+        print("  Finalizing MP4...")
+        let mp4Data = muxer.finalize()
+        print("  Total MP4 size: \(mp4Data.count) bytes")
+
+        // Write to file
+        do {
+            try mp4Data.write(to: URL(fileURLWithPath: output))
+            print("  Written to: \(output)")
+        } catch {
+            logger.error("Failed to write file: \(error)")
+            return
+        }
+
+        // Verify the output
+        print()
+        print("--- Verification ---")
+        let reader = MP4Reader(data: mp4Data)
+        do {
+            let boxes = try reader.readBoxes()
+            for box in boxes {
+                print("  [\(box.type)] size=\(box.size)")
+            }
+
+            // Print moov structure
+            if let moovBox = boxes.first(where: { $0.type == "moov" }) {
+                let moovReader = MP4Reader(data: moovBox.data)
+                let moovChildren = try moovReader.readBoxes()
+                for child in moovChildren {
+                    print("    [\(child.type)] size=\(child.size)")
+                    if child.type == "trak" {
+                        let trakReader = MP4Reader(data: child.data)
+                        let trakChildren = try trakReader.readBoxes()
+                        for tChild in trakChildren {
+                            print("      [\(tChild.type)] size=\(tChild.size)")
+                            if tChild.type == "mdia" {
+                                let mdiaReader = MP4Reader(data: tChild.data)
+                                let mdiaChildren = try mdiaReader.readBoxes()
+                                for mChild in mdiaChildren {
+                                    print("        [\(mChild.type)] size=\(mChild.size)")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            print()
+            print("MP4 muxing complete!")
+        } catch {
+            logger.error("Verification error: \(error)")
         }
     }
 

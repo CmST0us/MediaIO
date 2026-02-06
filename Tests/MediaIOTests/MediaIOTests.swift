@@ -1340,3 +1340,529 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(foundMvhd?.type, "mvhd")
     }
 }
+
+// MARK: - MP4 Muxer Tests
+final class MP4MuxerTests: XCTestCase {
+    func testMuxerVideoOnly() throws {
+        let muxer = MP4Muxer()
+        let videoConfig = MP4VideoTrackConfig(
+            width: 1920, height: 1080, timescale: 90000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x64, 0x00, 0x1E, 0xFF])
+        )
+        let trackID = muxer.addVideoTrack(config: videoConfig)
+        XCTAssertEqual(trackID, 1)
+
+        // Add keyframe
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xAA, count: 1000),
+            duration: 3000, isSync: true
+        ))
+        // Add P-frame
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xBB, count: 500),
+            duration: 3000, isSync: false
+        ))
+        // Add another keyframe
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xCC, count: 800),
+            duration: 3000, isSync: true
+        ))
+
+        let mp4Data = muxer.finalize()
+        XCTAssertTrue(mp4Data.count > 0)
+
+        // Parse the generated MP4
+        let reader = MP4Reader(data: mp4Data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes.count, 3) // ftyp + moov + mdat
+
+        XCTAssertEqual(boxes[0].type, "ftyp")
+        XCTAssertEqual(boxes[1].type, "moov")
+        XCTAssertEqual(boxes[2].type, "mdat")
+    }
+
+    func testMuxerAudioOnly() throws {
+        let muxer = MP4Muxer()
+        let audioConfig = MP4AudioTrackConfig(
+            sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+            decoderConfig: Data([0x12, 0x10]) // AAC-LC, 44100Hz, stereo
+        )
+        let trackID = muxer.addAudioTrack(config: audioConfig)
+        XCTAssertEqual(trackID, 1)
+
+        // Add 10 audio frames
+        for _ in 0..<10 {
+            muxer.addSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: 0xDD, count: 256),
+                duration: 1024
+            ))
+        }
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes.count, 3)
+
+        // Verify mdat has correct total data: 10 * 256 = 2560 bytes
+        XCTAssertEqual(boxes[2].data.count, 2560)
+    }
+
+    func testMuxerAudioAndVideo() throws {
+        let muxer = MP4Muxer()
+        let videoTrackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 1280, height: 720, timescale: 90000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x64, 0x00, 0x1E])
+        ))
+        let audioTrackID = muxer.addAudioTrack(config: MP4AudioTrackConfig(
+            sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+            decoderConfig: Data([0x12, 0x10])
+        ))
+
+        XCTAssertEqual(videoTrackID, 1)
+        XCTAssertEqual(audioTrackID, 2)
+
+        // Add video samples
+        muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+            data: Data(repeating: 0x11, count: 2000), duration: 3000, isSync: true
+        ))
+        muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+            data: Data(repeating: 0x22, count: 1000), duration: 3000, isSync: false
+        ))
+
+        // Add audio samples
+        muxer.addSample(trackID: audioTrackID, sample: MP4Sample(
+            data: Data(repeating: 0xAA, count: 256), duration: 1024
+        ))
+        muxer.addSample(trackID: audioTrackID, sample: MP4Sample(
+            data: Data(repeating: 0xBB, count: 256), duration: 1024
+        ))
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes.count, 3)
+
+        // Verify moov has 2 trak boxes
+        let moov = boxes[1]
+        XCTAssertEqual(moov.type, "moov")
+        let moovReader = MP4Reader(data: moov.data)
+        let moovChildren = try moovReader.readBoxes()
+        // mvhd + 2 trak = 3
+        XCTAssertEqual(moovChildren.count, 3)
+        XCTAssertEqual(moovChildren[0].type, "mvhd")
+        XCTAssertEqual(moovChildren[1].type, "trak")
+        XCTAssertEqual(moovChildren[2].type, "trak")
+
+        // mdat should contain all sample data: 2000 + 1000 + 256 + 256 = 3512
+        XCTAssertEqual(boxes[2].data.count, 3512)
+    }
+
+    func testMuxerBoxHierarchy() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 640, height: 480, timescale: 30000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x42, 0x00, 0x0A])
+        ))
+
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data([0x00, 0x01, 0x02, 0x03]),
+            duration: 1000, isSync: true
+        ))
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        // Verify full box hierarchy
+        let moov = try reader.findBox(path: "moov")
+        XCTAssertNotNil(moov)
+
+        let mvhd = try reader.findBox(path: "moov/mvhd")
+        XCTAssertNotNil(mvhd)
+
+        let trak = try reader.findBox(path: "moov/trak")
+        XCTAssertNotNil(trak)
+
+        // Navigate into trak
+        let trakReader = MP4Reader(data: trak!.data)
+        let trakChildren = try trakReader.readBoxes()
+        let childTypes = trakChildren.map { $0.type }
+        XCTAssertTrue(childTypes.contains("tkhd"))
+        XCTAssertTrue(childTypes.contains("mdia"))
+
+        // Navigate into mdia
+        let mdia = trakChildren.first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let mdiaChildren = try mdiaReader.readBoxes()
+        let mdiaChildTypes = mdiaChildren.map { $0.type }
+        XCTAssertTrue(mdiaChildTypes.contains("mdhd"))
+        XCTAssertTrue(mdiaChildTypes.contains("hdlr"))
+        XCTAssertTrue(mdiaChildTypes.contains("minf"))
+
+        // Navigate into minf
+        let minf = mdiaChildren.first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let minfChildren = try minfReader.readBoxes()
+        let minfChildTypes = minfChildren.map { $0.type }
+        XCTAssertTrue(minfChildTypes.contains("vmhd"))
+        XCTAssertTrue(minfChildTypes.contains("dinf"))
+        XCTAssertTrue(minfChildTypes.contains("stbl"))
+
+        // Navigate into stbl
+        let stbl = minfChildren.first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stblChildren = try stblReader.readBoxes()
+        let stblChildTypes = stblChildren.map { $0.type }
+        XCTAssertTrue(stblChildTypes.contains("stsd"))
+        XCTAssertTrue(stblChildTypes.contains("stts"))
+        XCTAssertTrue(stblChildTypes.contains("stsc"))
+        XCTAssertTrue(stblChildTypes.contains("stsz"))
+        XCTAssertTrue(stblChildTypes.contains("stco"))
+        XCTAssertTrue(stblChildTypes.contains("stss"))
+    }
+
+    func testMuxerSyncSamples() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+
+        // I, P, P, I, P pattern
+        let syncPattern = [true, false, false, true, false]
+        for isSync in syncPattern {
+            muxer.addSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: 0xFF, count: 100),
+                duration: 1000, isSync: isSync
+            ))
+        }
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        // Find stss box within moov/trak/mdia/minf/stbl
+        let trak = try reader.findBox(path: "moov/trak")!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stss = try stblReader.readBoxes().first(where: { $0.type == "stss" })!
+
+        // Parse stss: version(4) + count(4) + entries(4 each)
+        let ba = ByteArray(data: stss.data)
+        _ = try ba.readUInt32() // version+flags
+        let count = try ba.readUInt32()
+        XCTAssertEqual(count, 2) // 2 keyframes at positions 1 and 4
+
+        let sync1 = try ba.readUInt32()
+        let sync2 = try ba.readUInt32()
+        XCTAssertEqual(sync1, 1) // 1-based index
+        XCTAssertEqual(sync2, 4)
+    }
+
+    func testMuxerCompositionTimeOffset() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 1920, height: 1080, timescale: 90000, codec: "avc1"
+        ))
+
+        // Samples with B-frame reordering
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0x01, count: 100), duration: 3000,
+            isSync: true, compositionTimeOffset: 6000
+        ))
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0x02, count: 100), duration: 3000,
+            isSync: false, compositionTimeOffset: 0
+        ))
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0x03, count: 100), duration: 3000,
+            isSync: false, compositionTimeOffset: 3000
+        ))
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        // Navigate to stbl to verify ctts box exists
+        let trak = try reader.findBox(path: "moov/trak")!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stblChildren = try stblReader.readBoxes()
+
+        // ctts must exist since we have non-zero composition offsets
+        let ctts = stblChildren.first(where: { $0.type == "ctts" })
+        XCTAssertNotNil(ctts)
+    }
+
+    func testMuxerNoCttsWhenNotNeeded() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+
+        // All samples with compositionTimeOffset = 0
+        for _ in 0..<3 {
+            muxer.addSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: 0xFF, count: 50),
+                duration: 1000, isSync: true
+            ))
+        }
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        let trak = try reader.findBox(path: "moov/trak")!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stblChildren = try stblReader.readBoxes()
+
+        // ctts should NOT exist since all offsets are 0
+        let ctts = stblChildren.first(where: { $0.type == "ctts" })
+        XCTAssertNil(ctts)
+    }
+
+    func testMuxerSampleSizes() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+
+        // Variable sized samples
+        let sizes = [100, 200, 150, 300]
+        for (i, size) in sizes.enumerated() {
+            muxer.addSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: UInt8(i), count: size),
+                duration: 1000, isSync: i == 0
+            ))
+        }
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        // Navigate to stsz
+        let trak = try reader.findBox(path: "moov/trak")!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stsz = try stblReader.readBoxes().first(where: { $0.type == "stsz" })!
+
+        // Parse stsz: version(4) + default_size(4) + count(4) + entries
+        let ba = ByteArray(data: stsz.data)
+        _ = try ba.readUInt32() // version+flags
+        let defaultSize = try ba.readUInt32()
+        XCTAssertEqual(defaultSize, 0) // variable sizes
+        let count = try ba.readUInt32()
+        XCTAssertEqual(count, 4)
+
+        for expected in sizes {
+            let size = try ba.readUInt32()
+            XCTAssertEqual(size, UInt32(expected))
+        }
+    }
+
+    func testMuxerChunkOffsets() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+
+        let sampleSizes = [100, 200, 300]
+        for (i, size) in sampleSizes.enumerated() {
+            muxer.addSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: UInt8(i), count: size),
+                duration: 1000, isSync: i == 0
+            ))
+        }
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        // Navigate to stco
+        let trak = try reader.findBox(path: "moov/trak")!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stco = try stblReader.readBoxes().first(where: { $0.type == "stco" })!
+
+        // Parse stco: version(4) + count(4) + offsets
+        let ba = ByteArray(data: stco.data)
+        _ = try ba.readUInt32() // version+flags
+        let count = try ba.readUInt32()
+        XCTAssertEqual(count, 3) // one chunk per sample
+
+        let offset1 = try ba.readUInt32()
+        let offset2 = try ba.readUInt32()
+        let offset3 = try ba.readUInt32()
+
+        // Offsets should be sequential: sample 1 starts at base, sample 2 at base+100, sample 3 at base+300
+        XCTAssertEqual(offset2 - offset1, 100)
+        XCTAssertEqual(offset3 - offset2, 200)
+
+        // Verify offsets actually point to correct data in the file
+        XCTAssertEqual(mp4Data[Int(offset1)], 0x00) // first sample filled with 0x00
+        XCTAssertEqual(mp4Data[Int(offset2)], 0x01) // second sample filled with 0x01
+        XCTAssertEqual(mp4Data[Int(offset3)], 0x02) // third sample filled with 0x02
+    }
+
+    func testMuxerEmptyTrack() throws {
+        let muxer = MP4Muxer()
+        _ = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+
+        // Finalize with no samples
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes.count, 3)
+        // mdat should have no content
+        XCTAssertEqual(boxes[2].data.count, 0)
+    }
+
+    func testMuxerAudioSmhd() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addAudioTrack(config: MP4AudioTrackConfig(
+            sampleRate: 48000, channelCount: 1, timescale: 48000, codec: "mp4a",
+            decoderConfig: Data([0x11, 0x88])
+        ))
+
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xEE, count: 128), duration: 1024
+        ))
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        // Navigate to minf and verify smhd (not vmhd)
+        let trak = try reader.findBox(path: "moov/trak")!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let minfChildren = try minfReader.readBoxes()
+
+        let smhd = minfChildren.first(where: { $0.type == "smhd" })
+        let vmhd = minfChildren.first(where: { $0.type == "vmhd" })
+        XCTAssertNotNil(smhd, "Audio track should have smhd box")
+        XCTAssertNil(vmhd, "Audio track should not have vmhd box")
+
+        // stbl should NOT have stss (sync samples) for audio
+        let stbl = minfChildren.first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stblChildren = try stblReader.readBoxes()
+        let stss = stblChildren.first(where: { $0.type == "stss" })
+        XCTAssertNil(stss, "Audio track should not have stss box")
+    }
+
+    func testMuxerRoundTrip() throws {
+        // Build an MP4 with the muxer, then verify we can read it back with MP4Reader
+        let muxer = MP4Muxer()
+        let videoTrackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 1920, height: 1080, timescale: 90000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x64, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x04, 0x67, 0x64, 0x00, 0x1E])
+        ))
+        let audioTrackID = muxer.addAudioTrack(config: MP4AudioTrackConfig(
+            sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+            decoderConfig: Data([0x12, 0x10])
+        ))
+
+        // 2 seconds of video at 30fps
+        for i in 0..<60 {
+            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
+                data: Data(repeating: UInt8(i % 256), count: i % 2 == 0 ? 5000 : 2000),
+                duration: 3000,
+                isSync: i % 30 == 0,
+                compositionTimeOffset: i % 3 == 0 ? 0 : 3000
+            ))
+        }
+
+        // ~2 seconds of audio at ~43fps (1024 samples per frame @ 44100Hz)
+        for i in 0..<86 {
+            muxer.addSample(trackID: audioTrackID, sample: MP4Sample(
+                data: Data(repeating: UInt8(i % 256), count: 256),
+                duration: 1024
+            ))
+        }
+
+        let mp4Data = muxer.finalize()
+
+        // Verify top-level structure
+        let reader = MP4Reader(data: mp4Data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes.count, 3)
+        XCTAssertEqual(boxes[0].type, "ftyp")
+        XCTAssertEqual(boxes[1].type, "moov")
+        XCTAssertEqual(boxes[2].type, "mdat")
+
+        // Verify moov contains mvhd + 2 traks
+        let moovReader = MP4Reader(data: boxes[1].data)
+        let moovChildren = try moovReader.readBoxes()
+        XCTAssertEqual(moovChildren.count, 3) // mvhd + 2 trak
+        XCTAssertEqual(moovChildren[0].type, "mvhd")
+        XCTAssertEqual(moovChildren[1].type, "trak")
+        XCTAssertEqual(moovChildren[2].type, "trak")
+
+        // Verify total mdat size: 60 video samples + 86 audio samples
+        let expectedVideoSize = 30 * 5000 + 30 * 2000 // alternating 5000 and 2000
+        let expectedAudioSize = 86 * 256
+        XCTAssertEqual(boxes[2].data.count, expectedVideoSize + expectedAudioSize)
+    }
+
+    func testMuxerConstantSampleSize() throws {
+        let muxer = MP4Muxer()
+        let trackID = muxer.addAudioTrack(config: MP4AudioTrackConfig(
+            sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+            decoderConfig: Data([0x12, 0x10])
+        ))
+
+        // All same size
+        for _ in 0..<5 {
+            muxer.addSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: 0xEE, count: 256), duration: 1024
+            ))
+        }
+
+        let mp4Data = muxer.finalize()
+        let reader = MP4Reader(data: mp4Data)
+
+        let trak = try reader.findBox(path: "moov/trak")!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stsz = try stblReader.readBoxes().first(where: { $0.type == "stsz" })!
+
+        // When all samples are same size, stsz uses default_sample_size
+        let ba = ByteArray(data: stsz.data)
+        _ = try ba.readUInt32() // version+flags
+        let defaultSize = try ba.readUInt32()
+        XCTAssertEqual(defaultSize, 256) // constant size
+        let count = try ba.readUInt32()
+        XCTAssertEqual(count, 5)
+        // No per-sample entries when default size is set
+        XCTAssertEqual(ba.bytesAvailable, 0)
+    }
+}

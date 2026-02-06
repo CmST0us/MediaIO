@@ -33,7 +33,9 @@ swift run mio
     - `RTSPMessage.swift` - Request/response parsing, Transport header, status codes
     - `RTSPSession.swift` - Session state machine (OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN)
   - `FLV/` - Flash Video format (header, tags, audio/video tag headers, reader/writer)
-  - `ISO/` - MP4/ISO base media file format (box parser, box writer, track info)
+  - `ISO/` - MP4/ISO base media file format
+    - `MP4Parser.swift` - Box parser (MP4Reader), box writer (MP4Writer), MP4Box, MP4FullBox, MP4TrackInfo
+    - `MP4Muxer.swift` - MP4 muxer: packages audio/video samples into complete MP4 files (ftyp/moov/mdat with full trak/mdia/stbl hierarchy)
   - `Net/` - TCP socket abstraction (POSIX/Glibc)
   - `Demux/` - RTMP message demuxer (RTMP -> FLV tags)
   - `Mux/` - RTMP message muxer (FLV tags -> RTMP chunks)
