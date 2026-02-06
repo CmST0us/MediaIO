@@ -522,109 +522,84 @@ class mio {
     // MARK: - MP4 Mux Demo
 
     static func mp4MuxDemo(output: String) {
-        print("MP4 Muxer Demo")
-        print("==============")
-        print("Generating synthetic MP4 file: \(output)")
+        print("MP4 File Writer Demo (streaming, disk-based)")
+        print("=============================================")
+        print("Generating MP4 file: \(output)")
+        print("  Sample data is written directly to disk (low memory usage)")
         print()
 
-        let muxer = MP4Muxer()
-
-        // Configure video track: 1280x720 @ 30fps, H.264
-        let videoConfig = MP4VideoTrackConfig(
-            width: 1280, height: 720, timescale: 90000, codec: "avc1",
-            decoderConfig: Data([
-                // Minimal AVCDecoderConfigurationRecord
-                0x01, // configurationVersion
-                0x64, // AVCProfileIndication (High)
-                0x00, // profile_compatibility
-                0x1E, // AVCLevelIndication (3.0)
-                0xFF, // lengthSizeMinusOne = 3 (4 bytes NALU length)
-                0xE1, // numOfSequenceParameterSets = 1
-                0x00, 0x04, // SPS length
-                0x67, 0x64, 0x00, 0x1E, // SPS data (placeholder)
-                0x01, // numOfPictureParameterSets
-                0x00, 0x02, // PPS length
-                0x68, 0xEF  // PPS data (placeholder)
-            ])
-        )
-        let videoTrackID = muxer.addVideoTrack(config: videoConfig)
-        print("  Video track ID: \(videoTrackID)")
-        print("  Resolution: \(videoConfig.width)x\(videoConfig.height)")
-        print("  Codec: \(videoConfig.codec)")
-        print("  Timescale: \(videoConfig.timescale)")
-
-        // Configure audio track: AAC-LC 44100Hz stereo
-        let audioConfig = MP4AudioTrackConfig(
-            sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
-            decoderConfig: Data([0x12, 0x10]) // AAC-LC, 44100Hz, stereo
-        )
-        let audioTrackID = muxer.addAudioTrack(config: audioConfig)
-        print("  Audio track ID: \(audioTrackID)")
-        print("  Sample rate: \(audioConfig.sampleRate)")
-        print("  Channels: \(audioConfig.channelCount)")
-        print("  Codec: \(audioConfig.codec)")
-        print()
-
-        // Generate 2 seconds of video at 30fps (60 frames)
-        let videoDuration: UInt32 = 3000 // 90000 / 30 = 3000 ticks per frame
-        let gopSize = 30 // keyframe every 30 frames
-
-        print("  Generating video frames...")
-        for i in 0..<60 {
-            let isKeyframe = i % gopSize == 0
-            // Simulate H.264 NALUs: keyframes are larger
-            let frameSize = isKeyframe ? 5000 : 1500
-            let frameData = Data(repeating: UInt8(i & 0xFF), count: frameSize)
-
-            muxer.addSample(trackID: videoTrackID, sample: MP4Sample(
-                data: frameData,
-                duration: videoDuration,
-                isSync: isKeyframe,
-                compositionTimeOffset: (i % 3 != 0) ? 3000 : 0
-            ))
-        }
-        print("    60 video frames (2 GOP, 2 keyframes)")
-
-        // Generate ~2 seconds of audio (1024 samples per frame @ 44100 Hz)
-        // 44100 / 1024 ≈ 43.07 frames per second, so ~86 frames for 2s
-        let audioFrameDuration: UInt32 = 1024
-
-        print("  Generating audio frames...")
-        for i in 0..<86 {
-            let frameData = Data(repeating: UInt8((i * 3) & 0xFF), count: 256)
-            muxer.addSample(trackID: audioTrackID, sample: MP4Sample(
-                data: frameData,
-                duration: audioFrameDuration
-            ))
-        }
-        print("    86 audio frames (~2 seconds)")
-        print()
-
-        // Finalize
-        print("  Finalizing MP4...")
-        let mp4Data = muxer.finalize()
-        print("  Total MP4 size: \(mp4Data.count) bytes")
-
-        // Write to file
         do {
-            try mp4Data.write(to: URL(fileURLWithPath: output))
-            print("  Written to: \(output)")
-        } catch {
-            logger.error("Failed to write file: \(error)")
-            return
-        }
+            let writer = try MP4FileWriter(path: output)
 
-        // Verify the output
-        print()
-        print("--- Verification ---")
-        let reader = MP4Reader(data: mp4Data)
-        do {
+            // Configure video track: 1280x720 @ 30fps, H.264
+            let videoConfig = MP4VideoTrackConfig(
+                width: 1280, height: 720, timescale: 90000, codec: "avc1",
+                decoderConfig: Data([
+                    0x01, 0x64, 0x00, 0x1E, 0xFF, 0xE1,
+                    0x00, 0x04, 0x67, 0x64, 0x00, 0x1E,
+                    0x01, 0x00, 0x02, 0x68, 0xEF
+                ])
+            )
+            let videoTrackID = writer.addVideoTrack(config: videoConfig)
+            print("  Video track \(videoTrackID): \(videoConfig.width)x\(videoConfig.height) \(videoConfig.codec)")
+
+            // Configure audio track: AAC-LC 44100Hz stereo
+            let audioConfig = MP4AudioTrackConfig(
+                sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+                decoderConfig: Data([0x12, 0x10])
+            )
+            let audioTrackID = writer.addAudioTrack(config: audioConfig)
+            print("  Audio track \(audioTrackID): \(audioConfig.sampleRate)Hz \(audioConfig.channelCount)ch \(audioConfig.codec)")
+            print()
+
+            // Stream 2 seconds of video at 30fps
+            let videoDuration: UInt32 = 3000
+            let gopSize = 30
+
+            print("  Writing video frames...")
+            for i in 0..<60 {
+                let isKeyframe = i % gopSize == 0
+                let frameSize = isKeyframe ? 5000 : 1500
+                try writer.writeSample(trackID: videoTrackID, sample: MP4Sample(
+                    data: Data(repeating: UInt8(i & 0xFF), count: frameSize),
+                    duration: videoDuration,
+                    isSync: isKeyframe,
+                    compositionTimeOffset: (i % 3 != 0) ? 3000 : 0
+                ))
+            }
+            print("    60 video frames, \(writer.bytesWritten) bytes written")
+
+            // Stream ~2 seconds of audio
+            print("  Writing audio frames...")
+            for i in 0..<86 {
+                try writer.writeSample(trackID: audioTrackID, sample: MP4Sample(
+                    data: Data(repeating: UInt8((i * 3) & 0xFF), count: 256),
+                    duration: 1024
+                ))
+            }
+            print("    86 audio frames, \(writer.bytesWritten) bytes total")
+            print()
+
+            // Finalize: patches mdat size and writes moov
+            print("  Finalizing (writing moov)...")
+            try writer.finalize()
+
+            // Apply faststart: move moov before mdat
+            print("  Applying faststart (relocating moov before mdat)...")
+            try MP4FileWriter.relocateMoov(path: output)
+            print()
+
+            // Verify the output
+            print("--- Verification ---")
+            let data = try Data(contentsOf: URL(fileURLWithPath: output))
+            print("  File size: \(data.count) bytes")
+
+            let reader = MP4Reader(data: data)
             let boxes = try reader.readBoxes()
             for box in boxes {
                 print("  [\(box.type)] size=\(box.size)")
             }
 
-            // Print moov structure
             if let moovBox = boxes.first(where: { $0.type == "moov" }) {
                 let moovReader = MP4Reader(data: moovBox.data)
                 let moovChildren = try moovReader.readBoxes()
@@ -635,22 +610,23 @@ class mio {
                         let trakChildren = try trakReader.readBoxes()
                         for tChild in trakChildren {
                             print("      [\(tChild.type)] size=\(tChild.size)")
-                            if tChild.type == "mdia" {
-                                let mdiaReader = MP4Reader(data: tChild.data)
-                                let mdiaChildren = try mdiaReader.readBoxes()
-                                for mChild in mdiaChildren {
-                                    print("        [\(mChild.type)] size=\(mChild.size)")
-                                }
-                            }
                         }
                     }
                 }
             }
 
+            let moovIdx = boxes.firstIndex(where: { $0.type == "moov" })!
+            let mdatIdx = boxes.firstIndex(where: { $0.type == "mdat" })!
             print()
-            print("MP4 muxing complete!")
+            if moovIdx < mdatIdx {
+                print("  moov is before mdat (faststart enabled)")
+            } else {
+                print("  moov is after mdat")
+            }
+            print("  MP4 muxing complete!")
+
         } catch {
-            logger.error("Verification error: \(error)")
+            logger.error("Error: \(error)")
         }
     }
 

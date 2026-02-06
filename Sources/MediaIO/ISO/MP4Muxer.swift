@@ -63,619 +63,697 @@ public struct MP4AudioTrackConfig {
     }
 }
 
-// MARK: - MP4 Muxer
+// MARK: - Sample Metadata (lightweight, kept in memory)
 
-/// Muxes audio/video samples into a complete MP4 file (ISO 14496-12)
+/// Lightweight metadata for a sample - no media data, only bookkeeping
+struct SampleMetadata {
+    var size: UInt32
+    var duration: UInt32
+    var compositionTimeOffset: Int32
+    var isSync: Bool
+    /// Offset of this sample's data within the mdat content (relative to mdat body start)
+    var mdatOffset: UInt64
+}
+
+// MARK: - Track Metadata
+
+/// Track state: holds config + lightweight sample metadata, no media data
+final class TrackMetadata {
+    let trackID: UInt32
+    let timescale: UInt32
+    let mediaType: String // "vide" or "soun"
+    var videoConfig: MP4VideoTrackConfig?
+    var audioConfig: MP4AudioTrackConfig?
+    var samples: [SampleMetadata] = []
+
+    init(trackID: UInt32, timescale: UInt32, mediaType: String) {
+        self.trackID = trackID
+        self.timescale = timescale
+        self.mediaType = mediaType
+    }
+
+    var totalDuration: UInt64 {
+        samples.reduce(0) { $0 + UInt64($1.duration) }
+    }
+}
+
+// MARK: - MP4 Moov Builder (shared logic)
+
+/// Builds the moov box from track metadata.
+/// Used by both in-memory MP4Muxer and file-based MP4FileWriter.
+enum MP4MoovBuilder {
+
+    static func buildMoov(
+        tracks: [TrackMetadata],
+        nextTrackID: UInt32,
+        movieTimescale: UInt32,
+        mdatBodyOffset: UInt64
+    ) -> Data {
+        var movieDuration: UInt32 = 0
+        for track in tracks {
+            let d = UInt32(Double(track.totalDuration) / Double(track.timescale) * Double(movieTimescale))
+            movieDuration = max(movieDuration, d)
+        }
+
+        let mvhd = MP4Writer.mvhdBox(timescale: movieTimescale, duration: movieDuration, nextTrackID: nextTrackID)
+        var children: [Data] = [mvhd]
+        for track in tracks {
+            children.append(buildTrak(track: track, movieTimescale: movieTimescale, mdatBodyOffset: mdatBodyOffset))
+        }
+        return MP4Writer.containerBox(type: "moov", children: children)
+    }
+
+    // MARK: - trak
+
+    static func buildTrak(track: TrackMetadata, movieTimescale: UInt32, mdatBodyOffset: UInt64) -> Data {
+        let tkhd = buildTkhd(track: track, movieTimescale: movieTimescale)
+        let mdia = buildMdia(track: track, mdatBodyOffset: mdatBodyOffset)
+        return MP4Writer.containerBox(type: "trak", children: [tkhd, mdia])
+    }
+
+    static func buildTkhd(track: TrackMetadata, movieTimescale: UInt32) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt8(0) // version
+        ba.writeUInt24(0x000003) // flags: track_enabled | track_in_movie
+        ba.writeUInt32(0) // creation time
+        ba.writeUInt32(0) // modification time
+        ba.writeUInt32(track.trackID)
+        ba.writeUInt32(0) // reserved
+        let dur = UInt32(Double(track.totalDuration) / Double(track.timescale) * Double(movieTimescale))
+        ba.writeUInt32(dur)
+        ba.writeBytes(Data(repeating: 0, count: 8)) // reserved
+        ba.writeUInt16(0) // layer
+        ba.writeUInt16(0) // alternate group
+        ba.writeUInt16(track.mediaType == "soun" ? 0x0100 : 0) // volume
+        ba.writeUInt16(0) // reserved
+        let matrix: [UInt32] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
+        for v in matrix { ba.writeUInt32(v) }
+        if let vc = track.videoConfig {
+            ba.writeUInt32(UInt32(vc.width) << 16)
+            ba.writeUInt32(UInt32(vc.height) << 16)
+        } else {
+            ba.writeUInt32(0); ba.writeUInt32(0)
+        }
+        return wrapBox(type: "tkhd", payload: ba.data)
+    }
+
+    // MARK: - mdia
+
+    static func buildMdia(track: TrackMetadata, mdatBodyOffset: UInt64) -> Data {
+        let mdhd = buildMdhd(track: track)
+        let hdlr = buildHdlr(track: track)
+        let minf = buildMinf(track: track, mdatBodyOffset: mdatBodyOffset)
+        return MP4Writer.containerBox(type: "mdia", children: [mdhd, hdlr, minf])
+    }
+
+    static func buildMdhd(track: TrackMetadata) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0) // version + flags
+        ba.writeUInt32(0) // creation time
+        ba.writeUInt32(0) // modification time
+        ba.writeUInt32(track.timescale)
+        ba.writeUInt32(UInt32(min(track.totalDuration, UInt64(UInt32.max))))
+        ba.writeUInt16(0x55C4) // language
+        ba.writeUInt16(0)
+        return wrapBox(type: "mdhd", payload: ba.data)
+    }
+
+    static func buildHdlr(track: TrackMetadata) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        ba.writeUInt32(0)
+        ba.writeBytes(Data(track.mediaType.utf8.prefix(4)))
+        ba.writeBytes(Data(repeating: 0, count: 12))
+        let name = track.mediaType == "vide" ? "VideoHandler" : "SoundHandler"
+        ba.writeBytes(Data(name.utf8))
+        ba.writeUInt8(0)
+        return wrapBox(type: "hdlr", payload: ba.data)
+    }
+
+    // MARK: - minf
+
+    static func buildMinf(track: TrackMetadata, mdatBodyOffset: UInt64) -> Data {
+        var children: [Data] = []
+        children.append(track.mediaType == "vide" ? buildVmhd() : buildSmhd())
+        children.append(buildDinf())
+        children.append(buildStbl(track: track, mdatBodyOffset: mdatBodyOffset))
+        return MP4Writer.containerBox(type: "minf", children: children)
+    }
+
+    static func buildVmhd() -> Data {
+        let ba = ByteArray()
+        ba.writeUInt8(0); ba.writeUInt24(0x000001)
+        ba.writeUInt16(0)
+        ba.writeBytes(Data(repeating: 0, count: 6))
+        return wrapBox(type: "vmhd", payload: ba.data)
+    }
+
+    static func buildSmhd() -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        ba.writeUInt16(0); ba.writeUInt16(0)
+        return wrapBox(type: "smhd", payload: ba.data)
+    }
+
+    static func buildDinf() -> Data {
+        let urlBa = ByteArray()
+        urlBa.writeUInt8(0); urlBa.writeUInt24(0x000001)
+        let urlBox = wrapBox(type: "url ", payload: urlBa.data)
+        let drefBa = ByteArray()
+        drefBa.writeUInt32(0); drefBa.writeUInt32(1)
+        drefBa.writeBytes(urlBox)
+        let dref = wrapBox(type: "dref", payload: drefBa.data)
+        return MP4Writer.containerBox(type: "dinf", children: [dref])
+    }
+
+    // MARK: - stbl (sample table)
+
+    static func buildStbl(track: TrackMetadata, mdatBodyOffset: UInt64) -> Data {
+        var children: [Data] = []
+        children.append(buildStsd(track: track))
+        children.append(buildStts(samples: track.samples))
+        if track.samples.contains(where: { $0.compositionTimeOffset != 0 }) {
+            children.append(buildCtts(samples: track.samples))
+        }
+        children.append(buildStsc())
+        children.append(buildStsz(samples: track.samples))
+        // Use co64 for large files, stco for small files
+        let needsCo64 = track.samples.contains { mdatBodyOffset + $0.mdatOffset > UInt64(UInt32.max) }
+        if needsCo64 {
+            children.append(buildCo64(samples: track.samples, mdatBodyOffset: mdatBodyOffset))
+        } else {
+            children.append(buildStco(samples: track.samples, mdatBodyOffset: mdatBodyOffset))
+        }
+        if track.mediaType == "vide" {
+            children.append(buildStss(samples: track.samples))
+        }
+        return MP4Writer.containerBox(type: "stbl", children: children)
+    }
+
+    static func buildStsd(track: TrackMetadata) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0); ba.writeUInt32(1)
+        if track.mediaType == "vide", let vc = track.videoConfig {
+            ba.writeBytes(buildVideoSampleEntry(config: vc))
+        } else if track.mediaType == "soun", let ac = track.audioConfig {
+            ba.writeBytes(buildAudioSampleEntry(config: ac))
+        }
+        return wrapBox(type: "stsd", payload: ba.data)
+    }
+
+    static func buildVideoSampleEntry(config: MP4VideoTrackConfig) -> Data {
+        let ba = ByteArray()
+        ba.writeBytes(Data(repeating: 0, count: 6))
+        ba.writeUInt16(1)
+        ba.writeBytes(Data(repeating: 0, count: 16))
+        ba.writeUInt16(config.width)
+        ba.writeUInt16(config.height)
+        ba.writeUInt32(0x00480000)
+        ba.writeUInt32(0x00480000)
+        ba.writeUInt32(0)
+        ba.writeUInt16(1)
+        ba.writeBytes(Data(repeating: 0, count: 32))
+        ba.writeUInt16(0x0018)
+        ba.writeInt16(-1)
+        if !config.decoderConfig.isEmpty {
+            let t = (config.codec == "hev1" || config.codec == "hvc1") ? "hvcC" : "avcC"
+            ba.writeBytes(wrapBox(type: t, payload: config.decoderConfig))
+        }
+        return wrapBox(type: config.codec, payload: ba.data)
+    }
+
+    static func buildAudioSampleEntry(config: MP4AudioTrackConfig) -> Data {
+        let ba = ByteArray()
+        ba.writeBytes(Data(repeating: 0, count: 6))
+        ba.writeUInt16(1)
+        ba.writeBytes(Data(repeating: 0, count: 8))
+        ba.writeUInt16(config.channelCount)
+        ba.writeUInt16(16)
+        ba.writeUInt16(0); ba.writeUInt16(0)
+        ba.writeUInt32(config.sampleRate << 16)
+        if config.codec == "mp4a" && !config.decoderConfig.isEmpty {
+            ba.writeBytes(buildEsds(config: config))
+        }
+        return wrapBox(type: config.codec, payload: ba.data)
+    }
+
+    static func buildEsds(config: MP4AudioTrackConfig) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        let dcs = config.decoderConfig.count
+        ba.writeUInt8(0x03)
+        ba.writeUInt8(UInt8(min(23 + dcs, 255)))
+        ba.writeUInt16(1); ba.writeUInt8(0)
+        ba.writeUInt8(0x04)
+        ba.writeUInt8(UInt8(min(15 + dcs, 255)))
+        ba.writeUInt8(0x40); ba.writeUInt8(0x15)
+        ba.writeUInt24(0); ba.writeUInt32(0); ba.writeUInt32(0)
+        ba.writeUInt8(0x05)
+        ba.writeUInt8(UInt8(min(dcs, 255)))
+        ba.writeBytes(config.decoderConfig)
+        ba.writeUInt8(0x06); ba.writeUInt8(1); ba.writeUInt8(0x02)
+        return wrapBox(type: "esds", payload: ba.data)
+    }
+
+    // MARK: - Sample table boxes
+
+    static func buildStts(samples: [SampleMetadata]) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        var entries: [(count: UInt32, delta: UInt32)] = []
+        for s in samples {
+            if let last = entries.last, last.delta == s.duration {
+                entries[entries.count - 1].count += 1
+            } else {
+                entries.append((1, s.duration))
+            }
+        }
+        ba.writeUInt32(UInt32(entries.count))
+        for e in entries { ba.writeUInt32(e.count); ba.writeUInt32(e.delta) }
+        return wrapBox(type: "stts", payload: ba.data)
+    }
+
+    static func buildCtts(samples: [SampleMetadata]) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt8(1); ba.writeUInt24(0)
+        var entries: [(count: UInt32, offset: Int32)] = []
+        for s in samples {
+            if let last = entries.last, last.offset == s.compositionTimeOffset {
+                entries[entries.count - 1].count += 1
+            } else {
+                entries.append((1, s.compositionTimeOffset))
+            }
+        }
+        ba.writeUInt32(UInt32(entries.count))
+        for e in entries { ba.writeUInt32(e.count); ba.writeInt32(e.offset) }
+        return wrapBox(type: "ctts", payload: ba.data)
+    }
+
+    static func buildStsc() -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0); ba.writeUInt32(1)
+        ba.writeUInt32(1); ba.writeUInt32(1); ba.writeUInt32(1)
+        return wrapBox(type: "stsc", payload: ba.data)
+    }
+
+    static func buildStsz(samples: [SampleMetadata]) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        let sizes = samples.map { $0.size }
+        let allSame = !sizes.isEmpty && sizes.allSatisfy({ $0 == sizes[0] })
+        if allSame && !sizes.isEmpty {
+            ba.writeUInt32(sizes[0])
+            ba.writeUInt32(UInt32(sizes.count))
+        } else {
+            ba.writeUInt32(0)
+            ba.writeUInt32(UInt32(sizes.count))
+            for s in sizes { ba.writeUInt32(s) }
+        }
+        return wrapBox(type: "stsz", payload: ba.data)
+    }
+
+    static func buildStco(samples: [SampleMetadata], mdatBodyOffset: UInt64) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        ba.writeUInt32(UInt32(samples.count))
+        for s in samples {
+            ba.writeUInt32(UInt32(mdatBodyOffset + s.mdatOffset))
+        }
+        return wrapBox(type: "stco", payload: ba.data)
+    }
+
+    static func buildCo64(samples: [SampleMetadata], mdatBodyOffset: UInt64) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        ba.writeUInt32(UInt32(samples.count))
+        for s in samples {
+            ba.writeUInt64(mdatBodyOffset + s.mdatOffset)
+        }
+        return wrapBox(type: "co64", payload: ba.data)
+    }
+
+    static func buildStss(samples: [SampleMetadata]) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(0)
+        let syncIndices = samples.enumerated().filter { $0.element.isSync }.map { UInt32($0.offset + 1) }
+        ba.writeUInt32(UInt32(syncIndices.count))
+        for i in syncIndices { ba.writeUInt32(i) }
+        return wrapBox(type: "stss", payload: ba.data)
+    }
+
+    // MARK: - Helper
+
+    static func wrapBox(type: String, payload: Data) -> Data {
+        let ba = ByteArray()
+        ba.writeUInt32(UInt32(8 + payload.count))
+        ba.writeBytes(Data(type.utf8.prefix(4)))
+        ba.writeBytes(payload)
+        return ba.data
+    }
+}
+
+// MARK: - MP4 Muxer (in-memory, kept for backward compatibility)
+
+/// Muxes audio/video samples into a complete MP4 file in memory (ISO 14496-12).
+/// For large files, use ``MP4FileWriter`` instead.
 ///
 /// Usage:
 /// ```
 /// let muxer = MP4Muxer()
 /// let videoTrackID = muxer.addVideoTrack(config: videoConfig)
-/// let audioTrackID = muxer.addAudioTrack(config: audioConfig)
 /// muxer.addSample(trackID: videoTrackID, sample: videoSample)
-/// muxer.addSample(trackID: audioTrackID, sample: audioSample)
 /// let mp4Data = muxer.finalize()
 /// ```
 public final class MP4Muxer {
-    /// Internal track state
-    private final class Track {
-        let trackID: UInt32
-        let timescale: UInt32
-        let mediaType: String // "vide" or "soun"
-        var videoConfig: MP4VideoTrackConfig?
-        var audioConfig: MP4AudioTrackConfig?
-        var samples: [MP4Sample] = []
-
-        init(trackID: UInt32, timescale: UInt32, mediaType: String) {
-            self.trackID = trackID
-            self.timescale = timescale
-            self.mediaType = mediaType
-        }
-
-        var totalDuration: UInt64 {
-            samples.reduce(0) { $0 + UInt64($1.duration) }
-        }
-
-        var totalDataSize: Int {
-            samples.reduce(0) { $0 + $1.data.count }
-        }
-    }
-
-    private var tracks: [Track] = []
+    private var tracks: [TrackMetadata] = []
     private var nextTrackID: UInt32 = 1
-    /// Movie-level timescale (typically 1000 for millisecond precision)
+    private var mdatContent = Data()
     public var movieTimescale: UInt32 = 1000
 
     public init() {}
 
-    // MARK: - Add Tracks
-
-    /// Add a video track and return its track ID
     @discardableResult
     public func addVideoTrack(config: MP4VideoTrackConfig) -> UInt32 {
-        let track = Track(trackID: nextTrackID, timescale: config.timescale, mediaType: "vide")
+        let track = TrackMetadata(trackID: nextTrackID, timescale: config.timescale, mediaType: "vide")
         track.videoConfig = config
         tracks.append(track)
         nextTrackID += 1
         return track.trackID
     }
 
-    /// Add an audio track and return its track ID
     @discardableResult
     public func addAudioTrack(config: MP4AudioTrackConfig) -> UInt32 {
-        let track = Track(trackID: nextTrackID, timescale: config.timescale, mediaType: "soun")
+        let track = TrackMetadata(trackID: nextTrackID, timescale: config.timescale, mediaType: "soun")
         track.audioConfig = config
         tracks.append(track)
         nextTrackID += 1
         return track.trackID
     }
 
-    // MARK: - Add Samples
-
-    /// Add a sample (frame) to a track
     public func addSample(trackID: UInt32, sample: MP4Sample) {
         guard let track = tracks.first(where: { $0.trackID == trackID }) else { return }
-        track.samples.append(sample)
+        let meta = SampleMetadata(
+            size: UInt32(sample.data.count),
+            duration: sample.duration,
+            compositionTimeOffset: sample.compositionTimeOffset,
+            isSync: sample.isSync,
+            mdatOffset: UInt64(mdatContent.count)
+        )
+        track.samples.append(meta)
+        mdatContent.append(sample.data)
     }
+
+    /// Finalize and generate the complete MP4 file data.
+    /// Layout: ftyp + moov + mdat
+    public func finalize() -> Data {
+        let ftypData = MP4Writer.ftypBox(majorBrand: "isom", minorVersion: 512, compatibleBrands: ["isom", "iso2", "avc1", "mp41"])
+        let mdatHeaderSize: UInt64 = 8
+
+        // Build moov once to measure its size
+        let moovPlaceholder = MP4MoovBuilder.buildMoov(
+            tracks: tracks, nextTrackID: nextTrackID, movieTimescale: movieTimescale, mdatBodyOffset: 0
+        )
+        let mdatBodyOffset = UInt64(ftypData.count) + UInt64(moovPlaceholder.count) + mdatHeaderSize
+
+        // Rebuild moov with correct offsets
+        let moovData = MP4MoovBuilder.buildMoov(
+            tracks: tracks, nextTrackID: nextTrackID, movieTimescale: movieTimescale, mdatBodyOffset: mdatBodyOffset
+        )
+
+        let mdatData = MP4Writer.mdatBox(data: mdatContent)
+        return ftypData + moovData + mdatData
+    }
+}
+
+// MARK: - MP4 File Writer (streaming, disk-based)
+
+/// Streaming MP4 writer that writes sample data directly to disk.
+///
+/// Only lightweight sample metadata (offset, size, duration, flags) is kept in memory.
+/// Media data (the actual bytes of each frame) is written to the file immediately,
+/// keeping memory usage constant regardless of file size.
+///
+/// File layout: `ftyp | mdat (streaming) | moov`
+/// After finalization, optionally call ``relocateMoov()`` to move moov before mdat
+/// for progressive playback (equivalent to `ffmpeg -movflags +faststart`).
+///
+/// Usage:
+/// ```
+/// let writer = try MP4FileWriter(path: "/tmp/output.mp4")
+/// let videoTrackID = writer.addVideoTrack(config: videoConfig)
+/// try writer.writeSample(trackID: videoTrackID, sample: videoSample)
+/// try writer.finalize()
+/// // Optional: move moov to front for progressive playback
+/// try MP4FileWriter.relocateMoov(path: "/tmp/output.mp4")
+/// ```
+public final class MP4FileWriter {
+    private let fileHandle: FileHandle
+    private let filePath: String
+    private var tracks: [TrackMetadata] = []
+    private var nextTrackID: UInt32 = 1
+    public var movieTimescale: UInt32 = 1000
+
+    /// Offset in the file where mdat body (sample data) begins.
+    /// ftyp is written first, then mdat header, then sample data streams in.
+    private var mdatBodyFileOffset: UInt64 = 0
+    /// Current write position within mdat body (relative offset, = total bytes written so far)
+    private var mdatContentSize: UInt64 = 0
+    /// File offset where the mdat box header is written (needed to patch the size)
+    private var mdatBoxFileOffset: UInt64 = 0
+    private var headerWritten = false
+    private var finalized = false
+
+    /// Create a new MP4FileWriter writing to the given path.
+    /// The file is created/truncated immediately.
+    public init(path: String) throws {
+        self.filePath = path
+        FileManager.default.createFile(atPath: path, contents: nil)
+        guard let fh = FileHandle(forWritingAtPath: path) else {
+            throw MP4Error.invalidFormat
+        }
+        self.fileHandle = fh
+    }
+
+    deinit {
+        fileHandle.closeFile()
+    }
+
+    // MARK: - Add Tracks
+
+    @discardableResult
+    public func addVideoTrack(config: MP4VideoTrackConfig) -> UInt32 {
+        let track = TrackMetadata(trackID: nextTrackID, timescale: config.timescale, mediaType: "vide")
+        track.videoConfig = config
+        tracks.append(track)
+        nextTrackID += 1
+        return track.trackID
+    }
+
+    @discardableResult
+    public func addAudioTrack(config: MP4AudioTrackConfig) -> UInt32 {
+        let track = TrackMetadata(trackID: nextTrackID, timescale: config.timescale, mediaType: "soun")
+        track.audioConfig = config
+        tracks.append(track)
+        nextTrackID += 1
+        return track.trackID
+    }
+
+    // MARK: - Write Header
+
+    /// Write the ftyp box and begin the mdat box.
+    /// Called automatically on the first ``writeSample`` if not called explicitly.
+    public func writeHeader() throws {
+        guard !headerWritten else { return }
+        headerWritten = true
+
+        let ftyp = MP4Writer.ftypBox(majorBrand: "isom", minorVersion: 512, compatibleBrands: ["isom", "iso2", "avc1", "mp41"])
+        fileHandle.write(ftyp)
+
+        // Write mdat header with placeholder size (0 = extends to EOF).
+        // We'll patch this in finalize().
+        mdatBoxFileOffset = UInt64(ftyp.count)
+        let mdatHeader = ByteArray()
+        mdatHeader.writeUInt32(0) // placeholder size, patched later
+        mdatHeader.writeBytes(Data("mdat".utf8))
+        fileHandle.write(mdatHeader.data)
+
+        mdatBodyFileOffset = mdatBoxFileOffset + 8
+        mdatContentSize = 0
+    }
+
+    // MARK: - Write Sample (streaming)
+
+    /// Write a sample's media data directly to disk.
+    /// Only the lightweight metadata is kept in memory.
+    public func writeSample(trackID: UInt32, sample: MP4Sample) throws {
+        guard !finalized else { throw MP4Error.invalidFormat }
+        if !headerWritten { try writeHeader() }
+
+        guard let track = tracks.first(where: { $0.trackID == trackID }) else { return }
+
+        let meta = SampleMetadata(
+            size: UInt32(sample.data.count),
+            duration: sample.duration,
+            compositionTimeOffset: sample.compositionTimeOffset,
+            isSync: sample.isSync,
+            mdatOffset: mdatContentSize
+        )
+        track.samples.append(meta)
+
+        // Write media data to file immediately - this is the key difference from MP4Muxer
+        fileHandle.write(sample.data)
+        mdatContentSize += UInt64(sample.data.count)
+    }
+
+    /// Current number of samples written to a track
+    public func sampleCount(trackID: UInt32) -> Int {
+        tracks.first(where: { $0.trackID == trackID })?.samples.count ?? 0
+    }
+
+    /// Total bytes of media data written so far
+    public var bytesWritten: UInt64 { mdatContentSize }
 
     // MARK: - Finalize
 
-    /// Finalize and generate the complete MP4 file data
-    /// Layout: ftyp + moov + mdat
-    public func finalize() -> Data {
-        // Calculate mdat offset: ftyp size + moov size
-        // We need to build moov first to know its size, but moov needs chunk offsets
-        // which depend on mdat position. We solve this in two passes.
-
-        let ftypData = buildFtyp()
-
-        // Build mdat content
-        var mdatContent = Data()
-        var sampleOffsets: [[UInt32]] = [] // per-track offsets within mdat content
-
-        for track in tracks {
-            var trackOffsets: [UInt32] = []
-            for sample in track.samples {
-                trackOffsets.append(UInt32(mdatContent.count))
-                mdatContent.append(sample.data)
-            }
-            sampleOffsets.append(trackOffsets)
+    /// Finalize the MP4 file: patch mdat size and append moov box.
+    /// After this call, no more samples can be written.
+    public func finalize() throws {
+        guard !finalized else { return }
+        guard headerWritten else {
+            // Nothing was written
+            try writeHeader()
         }
+        finalized = true
 
-        // mdat header is 8 bytes
-        let mdatHeaderSize: UInt32 = 8
-        // moov placeholder - build once to get size
-        let moovPlaceholder = buildMoov(mdatBaseOffset: 0, sampleOffsets: sampleOffsets)
-        let moovSize = UInt32(moovPlaceholder.count)
-
-        // Real mdat base offset = ftyp + moov + mdat header
-        let mdatBaseOffset = UInt32(ftypData.count) + moovSize + mdatHeaderSize
-
-        // Rebuild moov with correct offsets
-        let moovData = buildMoov(mdatBaseOffset: mdatBaseOffset, sampleOffsets: sampleOffsets)
-
-        // Build mdat
-        let mdatData = buildMdat(content: mdatContent)
-
-        return ftypData + moovData + mdatData
-    }
-
-    // MARK: - Box Builders
-
-    /// Build ftyp box
-    private func buildFtyp() -> Data {
-        MP4Writer.ftypBox(
-            majorBrand: "isom",
-            minorVersion: 512,
-            compatibleBrands: ["isom", "iso2", "avc1", "mp41"]
-        )
-    }
-
-    /// Build mdat box
-    private func buildMdat(content: Data) -> Data {
-        MP4Writer.mdatBox(data: content)
-    }
-
-    /// Build complete moov box
-    private func buildMoov(mdatBaseOffset: UInt32, sampleOffsets: [[UInt32]]) -> Data {
-        // Movie duration in movie timescale
-        var movieDuration: UInt32 = 0
-        for track in tracks {
-            let trackDurationInMovieTimescale = UInt32(
-                Double(track.totalDuration) / Double(track.timescale) * Double(movieTimescale)
-            )
-            movieDuration = max(movieDuration, trackDurationInMovieTimescale)
-        }
-
-        let mvhd = buildMvhd(duration: movieDuration)
-        var children: [Data] = [mvhd]
-
-        for (index, track) in tracks.enumerated() {
-            let offsets = index < sampleOffsets.count ? sampleOffsets[index] : []
-            children.append(buildTrak(track: track, mdatBaseOffset: mdatBaseOffset, sampleOffsets: offsets))
-        }
-
-        return MP4Writer.containerBox(type: "moov", children: children)
-    }
-
-    /// Build mvhd box (movie header)
-    private func buildMvhd(duration: UInt32) -> Data {
-        MP4Writer.mvhdBox(
-            timescale: movieTimescale,
-            duration: duration,
-            nextTrackID: nextTrackID
-        )
-    }
-
-    /// Build trak box (track)
-    private func buildTrak(track: Track, mdatBaseOffset: UInt32, sampleOffsets: [UInt32]) -> Data {
-        let tkhd = buildTkhd(track: track)
-        let mdia = buildMdia(track: track, mdatBaseOffset: mdatBaseOffset, sampleOffsets: sampleOffsets)
-        return MP4Writer.containerBox(type: "trak", children: [tkhd, mdia])
-    }
-
-    /// Build tkhd box (track header)
-    private func buildTkhd(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3): track_enabled | track_in_movie
-        ba.writeUInt8(0) // version
-        ba.writeUInt24(0x000003) // flags: track_enabled | track_in_movie
-        // Creation time
-        ba.writeUInt32(0)
-        // Modification time
-        ba.writeUInt32(0)
-        // Track ID
-        ba.writeUInt32(track.trackID)
-        // Reserved
-        ba.writeUInt32(0)
-        // Duration in movie timescale
-        let durationInMovieTimescale = UInt32(
-            Double(track.totalDuration) / Double(track.timescale) * Double(movieTimescale)
-        )
-        ba.writeUInt32(durationInMovieTimescale)
-        // Reserved (8 bytes)
-        ba.writeBytes(Data(repeating: 0, count: 8))
-        // Layer
-        ba.writeUInt16(0)
-        // Alternate group
-        ba.writeUInt16(0)
-        // Volume: 0x0100 for audio, 0 for video
-        ba.writeUInt16(track.mediaType == "soun" ? 0x0100 : 0)
-        // Reserved
-        ba.writeUInt16(0)
-        // Matrix (36 bytes) - identity
-        let matrix: [UInt32] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
-        for v in matrix { ba.writeUInt32(v) }
-        // Width / Height in 16.16 fixed point
-        if let vc = track.videoConfig {
-            ba.writeUInt32(UInt32(vc.width) << 16)
-            ba.writeUInt32(UInt32(vc.height) << 16)
+        // Patch mdat box size
+        let mdatTotalSize = 8 + mdatContentSize
+        if mdatTotalSize <= UInt64(UInt32.max) {
+            // Standard 32-bit size
+            let sizeData = ByteArray()
+            sizeData.writeUInt32(UInt32(mdatTotalSize))
+            fileHandle.seek(toFileOffset: mdatBoxFileOffset)
+            fileHandle.write(sizeData.data)
         } else {
-            ba.writeUInt32(0)
-            ba.writeUInt32(0)
+            // For files > 4GB we'd need to rewrite with extended size header.
+            // For now, leave size=0 (meaning "to end of file") which most players support.
+            // The moov will still be appended after mdat.
         }
 
-        return wrapBox(type: "tkhd", payload: ba.data)
+        // Seek to end of mdat
+        fileHandle.seekToEndOfFile()
+
+        // Build and write moov
+        let moovData = MP4MoovBuilder.buildMoov(
+            tracks: tracks,
+            nextTrackID: nextTrackID,
+            movieTimescale: movieTimescale,
+            mdatBodyOffset: mdatBodyFileOffset
+        )
+        fileHandle.write(moovData)
+        fileHandle.synchronizeFile()
     }
 
-    /// Build mdia box (media)
-    private func buildMdia(track: Track, mdatBaseOffset: UInt32, sampleOffsets: [UInt32]) -> Data {
-        let mdhd = buildMdhd(track: track)
-        let hdlr = buildHdlr(track: track)
-        let minf = buildMinf(track: track, mdatBaseOffset: mdatBaseOffset, sampleOffsets: sampleOffsets)
-        return MP4Writer.containerBox(type: "mdia", children: [mdhd, hdlr, minf])
-    }
+    // MARK: - Faststart (moov relocation)
 
-    /// Build mdhd box (media header)
-    private func buildMdhd(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-        // Creation time
-        ba.writeUInt32(0)
-        // Modification time
-        ba.writeUInt32(0)
-        // Timescale
-        ba.writeUInt32(track.timescale)
-        // Duration in media timescale
-        ba.writeUInt32(UInt32(min(track.totalDuration, UInt64(UInt32.max))))
-        // Language (undetermined = 0x55C4)
-        ba.writeUInt16(0x55C4)
-        // Pre-defined
-        ba.writeUInt16(0)
+    /// Relocate moov box to before mdat for progressive playback.
+    /// This is equivalent to `ffmpeg -movflags +faststart`.
+    ///
+    /// Reads the existing file, finds moov at the end, and rewrites the file
+    /// with moov placed before mdat, adjusting all chunk offsets.
+    ///
+    /// Call this after ``finalize()``.
+    public static func relocateMoov(path: String) throws {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let reader = MP4Reader(data: data)
+        let boxes = try reader.readBoxes()
 
-        return wrapBox(type: "mdhd", payload: ba.data)
-    }
-
-    /// Build hdlr box (handler reference)
-    private func buildHdlr(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-        // Pre-defined
-        ba.writeUInt32(0)
-        // Handler type
-        ba.writeBytes(Data(track.mediaType.utf8.prefix(4)))
-        // Reserved (12 bytes)
-        ba.writeBytes(Data(repeating: 0, count: 12))
-        // Name (null-terminated)
-        let name = track.mediaType == "vide" ? "VideoHandler" : "SoundHandler"
-        ba.writeBytes(Data(name.utf8))
-        ba.writeUInt8(0) // null terminator
-
-        return wrapBox(type: "hdlr", payload: ba.data)
-    }
-
-    /// Build minf box (media information)
-    private func buildMinf(track: Track, mdatBaseOffset: UInt32, sampleOffsets: [UInt32]) -> Data {
-        var children: [Data] = []
-
-        // Media header: vmhd for video, smhd for audio
-        if track.mediaType == "vide" {
-            children.append(buildVmhd())
-        } else {
-            children.append(buildSmhd())
+        // Find ftyp, mdat, moov
+        guard let ftypBox = boxes.first(where: { $0.type == "ftyp" }),
+              let mdatBox = boxes.first(where: { $0.type == "mdat" }),
+              let moovBox = boxes.first(where: { $0.type == "moov" }) else {
+            throw MP4Error.invalidFormat
         }
 
-        // dinf (data information)
-        children.append(buildDinf())
+        // If moov is already before mdat, nothing to do
+        if moovBox.offset < mdatBox.offset { return }
 
-        // stbl (sample table)
-        children.append(buildStbl(track: track, mdatBaseOffset: mdatBaseOffset, sampleOffsets: sampleOffsets))
+        // Encode moov box for measuring
+        let moovEncoded = moovBox.encode()
+        let moovSize = moovEncoded.count
 
-        return MP4Writer.containerBox(type: "minf", children: children)
+        // Adjust chunk offsets in moov: all offsets shift by +moovSize
+        // (because moov is being inserted between ftyp and mdat)
+        let adjustedMoov = try adjustChunkOffsets(moovData: moovBox.data, delta: Int64(moovSize))
+        let adjustedMoovBox = ByteArray()
+        adjustedMoovBox.writeUInt32(UInt32(8 + adjustedMoov.count))
+        adjustedMoovBox.writeBytes(Data("moov".utf8))
+        adjustedMoovBox.writeBytes(adjustedMoov)
+
+        // Rewrite: ftyp + moov (adjusted) + mdat
+        let ftypEncoded = ftypBox.encode()
+        let mdatEncoded = mdatBox.encode()
+
+        var output = Data()
+        output.reserveCapacity(ftypEncoded.count + adjustedMoovBox.data.count + mdatEncoded.count)
+        output.append(ftypEncoded)
+        output.append(adjustedMoovBox.data)
+        output.append(mdatEncoded)
+
+        try output.write(to: URL(fileURLWithPath: path))
     }
 
-    /// Build vmhd box (video media header)
-    private func buildVmhd() -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3): flag = 1
-        ba.writeUInt8(0)
-        ba.writeUInt24(0x000001)
-        // Graphics mode
-        ba.writeUInt16(0)
-        // Opcolor (6 bytes)
-        ba.writeBytes(Data(repeating: 0, count: 6))
-
-        return wrapBox(type: "vmhd", payload: ba.data)
+    /// Adjust stco/co64 chunk offsets within moov data by a delta.
+    private static func adjustChunkOffsets(moovData: Data, delta: Int64) throws -> Data {
+        var result = moovData
+        // We need to find and patch stco and co64 boxes within the moov hierarchy.
+        // Walk the box tree recursively.
+        try patchChunkOffsets(in: &result, offset: 0, delta: delta)
+        return result
     }
 
-    /// Build smhd box (sound media header)
-    private func buildSmhd() -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-        // Balance
-        ba.writeUInt16(0)
-        // Reserved
-        ba.writeUInt16(0)
+    /// Recursively walk boxes in data, patching stco/co64 entries.
+    private static func patchChunkOffsets(in data: inout Data, offset: Int, delta: Int64) throws {
+        var pos = offset
+        while pos + 8 <= data.count {
+            let rawSize = UInt32(data: Data(data[pos..<pos+4])).bigEndian
+            guard rawSize >= 8 else { break }
+            let size = Int(rawSize)
+            guard pos + size <= data.count else { break }
 
-        return wrapBox(type: "smhd", payload: ba.data)
-    }
+            let typeData = Data(data[pos+4..<pos+8])
+            let type = String(data: typeData, encoding: .ascii) ?? ""
 
-    /// Build dinf + dref boxes (data information)
-    private func buildDinf() -> Data {
-        // dref with one "url " entry (self-contained)
-        let urlBa = ByteArray()
-        // Version(1) + Flags(3): flag = 1 (self-contained)
-        urlBa.writeUInt8(0)
-        urlBa.writeUInt24(0x000001)
-        let urlBox = wrapBox(type: "url ", payload: urlBa.data)
-
-        let drefBa = ByteArray()
-        // Version(1) + Flags(3)
-        drefBa.writeUInt32(0)
-        // Entry count
-        drefBa.writeUInt32(1)
-        drefBa.writeBytes(urlBox)
-        let dref = wrapBox(type: "dref", payload: drefBa.data)
-
-        return MP4Writer.containerBox(type: "dinf", children: [dref])
-    }
-
-    /// Build stbl box (sample table)
-    private func buildStbl(track: Track, mdatBaseOffset: UInt32, sampleOffsets: [UInt32]) -> Data {
-        var children: [Data] = []
-
-        // stsd (sample description)
-        children.append(buildStsd(track: track))
-        // stts (decoding time to sample)
-        children.append(buildStts(track: track))
-        // ctts (composition time to sample) - only if needed
-        if track.samples.contains(where: { $0.compositionTimeOffset != 0 }) {
-            children.append(buildCtts(track: track))
-        }
-        // stsc (sample to chunk)
-        children.append(buildStsc(track: track))
-        // stsz (sample sizes)
-        children.append(buildStsz(track: track))
-        // stco (chunk offsets)
-        children.append(buildStco(track: track, mdatBaseOffset: mdatBaseOffset, sampleOffsets: sampleOffsets))
-        // stss (sync samples) - only for video tracks
-        if track.mediaType == "vide" {
-            children.append(buildStss(track: track))
-        }
-
-        return MP4Writer.containerBox(type: "stbl", children: children)
-    }
-
-    /// Build stsd box (sample description)
-    private func buildStsd(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-        // Entry count
-        ba.writeUInt32(1)
-
-        if track.mediaType == "vide", let vc = track.videoConfig {
-            ba.writeBytes(buildVideoSampleEntry(config: vc))
-        } else if track.mediaType == "soun", let ac = track.audioConfig {
-            ba.writeBytes(buildAudioSampleEntry(config: ac))
-        }
-
-        return wrapBox(type: "stsd", payload: ba.data)
-    }
-
-    /// Build video sample entry (e.g., avc1)
-    private func buildVideoSampleEntry(config: MP4VideoTrackConfig) -> Data {
-        let ba = ByteArray()
-        // Reserved (6 bytes)
-        ba.writeBytes(Data(repeating: 0, count: 6))
-        // Data reference index
-        ba.writeUInt16(1)
-        // Pre-defined + Reserved (16 bytes)
-        ba.writeBytes(Data(repeating: 0, count: 16))
-        // Width
-        ba.writeUInt16(config.width)
-        // Height
-        ba.writeUInt16(config.height)
-        // Horizontal resolution (72 dpi = 0x00480000)
-        ba.writeUInt32(0x00480000)
-        // Vertical resolution (72 dpi = 0x00480000)
-        ba.writeUInt32(0x00480000)
-        // Reserved
-        ba.writeUInt32(0)
-        // Frame count
-        ba.writeUInt16(1)
-        // Compressor name (32 bytes, padded)
-        ba.writeBytes(Data(repeating: 0, count: 32))
-        // Depth
-        ba.writeUInt16(0x0018) // 24-bit color
-        // Pre-defined
-        ba.writeInt16(-1)
-
-        // avcC or hvcC box (decoder configuration)
-        if !config.decoderConfig.isEmpty {
-            let configBoxType = config.codec == "hev1" || config.codec == "hvc1" ? "hvcC" : "avcC"
-            ba.writeBytes(wrapBox(type: configBoxType, payload: config.decoderConfig))
-        }
-
-        return wrapBox(type: config.codec, payload: ba.data)
-    }
-
-    /// Build audio sample entry (e.g., mp4a)
-    private func buildAudioSampleEntry(config: MP4AudioTrackConfig) -> Data {
-        let ba = ByteArray()
-        // Reserved (6 bytes)
-        ba.writeBytes(Data(repeating: 0, count: 6))
-        // Data reference index
-        ba.writeUInt16(1)
-        // Reserved (8 bytes)
-        ba.writeBytes(Data(repeating: 0, count: 8))
-        // Channel count
-        ba.writeUInt16(config.channelCount)
-        // Sample size (bits)
-        ba.writeUInt16(16)
-        // Pre-defined
-        ba.writeUInt16(0)
-        // Reserved
-        ba.writeUInt16(0)
-        // Sample rate in 16.16 fixed point
-        ba.writeUInt32(config.sampleRate << 16)
-
-        // esds box for AAC
-        if config.codec == "mp4a" && !config.decoderConfig.isEmpty {
-            ba.writeBytes(buildEsds(config: config))
-        }
-
-        return wrapBox(type: config.codec, payload: ba.data)
-    }
-
-    /// Build esds box for AAC audio
-    private func buildEsds(config: MP4AudioTrackConfig) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-
-        // ES_Descriptor
-        ba.writeUInt8(0x03) // tag
-        let decoderConfigSize = config.decoderConfig.count
-        let esDescLen = 23 + decoderConfigSize
-        ba.writeUInt8(UInt8(min(esDescLen, 255)))
-        ba.writeUInt16(1) // ES_ID
-        ba.writeUInt8(0)  // stream priority
-
-        // DecoderConfigDescriptor
-        ba.writeUInt8(0x04) // tag
-        ba.writeUInt8(UInt8(min(15 + decoderConfigSize, 255)))
-        ba.writeUInt8(0x40) // objectTypeIndication: Audio ISO/IEC 14496-3 (AAC)
-        ba.writeUInt8(0x15) // streamType: audio stream
-        ba.writeUInt24(0)   // bufferSizeDB
-        ba.writeUInt32(0)   // maxBitrate
-        ba.writeUInt32(0)   // avgBitrate
-
-        // DecoderSpecificInfo
-        ba.writeUInt8(0x05) // tag
-        ba.writeUInt8(UInt8(min(decoderConfigSize, 255)))
-        ba.writeBytes(config.decoderConfig)
-
-        // SLConfigDescriptor
-        ba.writeUInt8(0x06) // tag
-        ba.writeUInt8(1)
-        ba.writeUInt8(0x02) // predefined: MP4
-
-        return wrapBox(type: "esds", payload: ba.data)
-    }
-
-    /// Build stts box (decoding time to sample)
-    /// Groups consecutive samples with the same duration into entries
-    private func buildStts(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-
-        // Build run-length encoded entries
-        var entries: [(count: UInt32, delta: UInt32)] = []
-        for sample in track.samples {
-            if let last = entries.last, last.delta == sample.duration {
-                entries[entries.count - 1].count += 1
-            } else {
-                entries.append((count: 1, delta: sample.duration))
+            if type == "stco" {
+                // stco: version(4) + count(4) + offsets(4 each)
+                let headerStart = pos + 8
+                guard headerStart + 8 <= data.count else { break }
+                let count = Int(UInt32(data: Data(data[headerStart+4..<headerStart+8])).bigEndian)
+                for i in 0..<count {
+                    let entryPos = headerStart + 8 + i * 4
+                    guard entryPos + 4 <= data.count else { break }
+                    let oldOffset = UInt32(data: Data(data[entryPos..<entryPos+4])).bigEndian
+                    let newOffset = UInt32(Int64(oldOffset) + delta)
+                    let bytes = newOffset.bigEndian.data
+                    data.replaceSubrange(entryPos..<entryPos+4, with: bytes)
+                }
+            } else if type == "co64" {
+                let headerStart = pos + 8
+                guard headerStart + 8 <= data.count else { break }
+                let count = Int(UInt32(data: Data(data[headerStart+4..<headerStart+8])).bigEndian)
+                for i in 0..<count {
+                    let entryPos = headerStart + 8 + i * 8
+                    guard entryPos + 8 <= data.count else { break }
+                    let oldOffset = UInt64(data: Data(data[entryPos..<entryPos+8])).bigEndian
+                    let newOffset = UInt64(Int64(oldOffset) + delta)
+                    let bytes = newOffset.bigEndian.data
+                    data.replaceSubrange(entryPos..<entryPos+8, with: bytes)
+                }
+            } else if ["moov", "trak", "mdia", "minf", "stbl"].contains(type) {
+                // Container box: recurse into children
+                try patchChunkOffsets(in: &data, offset: pos + 8, delta: delta)
             }
+
+            pos += size
         }
-
-        ba.writeUInt32(UInt32(entries.count))
-        for entry in entries {
-            ba.writeUInt32(entry.count)
-            ba.writeUInt32(entry.delta)
-        }
-
-        return wrapBox(type: "stts", payload: ba.data)
-    }
-
-    /// Build ctts box (composition time to sample)
-    private func buildCtts(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version 1 allows negative offsets
-        ba.writeUInt8(1) // version
-        ba.writeUInt24(0) // flags
-
-        var entries: [(count: UInt32, offset: Int32)] = []
-        for sample in track.samples {
-            if let last = entries.last, last.offset == sample.compositionTimeOffset {
-                entries[entries.count - 1].count += 1
-            } else {
-                entries.append((count: 1, offset: sample.compositionTimeOffset))
-            }
-        }
-
-        ba.writeUInt32(UInt32(entries.count))
-        for entry in entries {
-            ba.writeUInt32(entry.count)
-            ba.writeInt32(entry.offset)
-        }
-
-        return wrapBox(type: "ctts", payload: ba.data)
-    }
-
-    /// Build stsc box (sample to chunk)
-    /// Simple strategy: one sample per chunk
-    private func buildStsc(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-        // Entry count: 1 entry covering all chunks (each chunk has 1 sample)
-        ba.writeUInt32(1)
-        // First chunk
-        ba.writeUInt32(1)
-        // Samples per chunk
-        ba.writeUInt32(1)
-        // Sample description index
-        ba.writeUInt32(1)
-
-        return wrapBox(type: "stsc", payload: ba.data)
-    }
-
-    /// Build stsz box (sample sizes)
-    private func buildStsz(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-
-        // Check if all samples are the same size
-        let sizes = track.samples.map { UInt32($0.data.count) }
-        let allSameSize = sizes.count > 0 && sizes.allSatisfy({ $0 == sizes[0] })
-
-        if allSameSize && !sizes.isEmpty {
-            // Default sample size
-            ba.writeUInt32(sizes[0])
-            // Sample count
-            ba.writeUInt32(UInt32(sizes.count))
-        } else {
-            // Default sample size = 0 (variable)
-            ba.writeUInt32(0)
-            // Sample count
-            ba.writeUInt32(UInt32(sizes.count))
-            for size in sizes {
-                ba.writeUInt32(size)
-            }
-        }
-
-        return wrapBox(type: "stsz", payload: ba.data)
-    }
-
-    /// Build stco box (chunk offsets)
-    private func buildStco(track: Track, mdatBaseOffset: UInt32, sampleOffsets: [UInt32]) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-        // Entry count
-        ba.writeUInt32(UInt32(sampleOffsets.count))
-        // Each chunk offset (one sample per chunk)
-        for offset in sampleOffsets {
-            ba.writeUInt32(mdatBaseOffset + offset)
-        }
-
-        return wrapBox(type: "stco", payload: ba.data)
-    }
-
-    /// Build stss box (sync sample table) - lists keyframe indices
-    private func buildStss(track: Track) -> Data {
-        let ba = ByteArray()
-        // Version(1) + Flags(3)
-        ba.writeUInt32(0)
-
-        let syncIndices = track.samples.enumerated()
-            .filter { $0.element.isSync }
-            .map { UInt32($0.offset + 1) } // 1-based
-
-        ba.writeUInt32(UInt32(syncIndices.count))
-        for index in syncIndices {
-            ba.writeUInt32(index)
-        }
-
-        return wrapBox(type: "stss", payload: ba.data)
-    }
-
-    // MARK: - Helpers
-
-    /// Wrap payload data into a box with type header
-    private func wrapBox(type: String, payload: Data) -> Data {
-        let ba = ByteArray()
-        let totalSize = UInt32(8 + payload.count)
-        ba.writeUInt32(totalSize)
-        ba.writeBytes(Data(type.utf8.prefix(4)))
-        ba.writeBytes(payload)
-        return ba.data
     }
 }

@@ -1866,3 +1866,336 @@ final class MP4MuxerTests: XCTestCase {
         XCTAssertEqual(ba.bytesAvailable, 0)
     }
 }
+
+// MARK: - MP4 File Writer Tests
+final class MP4FileWriterTests: XCTestCase {
+    var tempDir: String!
+
+    override func setUp() {
+        super.setUp()
+        tempDir = NSTemporaryDirectory() + "MediaIOTests_\(ProcessInfo.processInfo.globallyUniqueString)/"
+        try? FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(atPath: tempDir)
+        super.tearDown()
+    }
+
+    func testFileWriterBasicVideoOnly() throws {
+        let path = tempDir + "video.mp4"
+        let writer = try MP4FileWriter(path: path)
+        let trackID = writer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 1920, height: 1080, timescale: 90000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x64, 0x00, 0x1E])
+        ))
+
+        // Write keyframe
+        try writer.writeSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xAA, count: 5000), duration: 3000, isSync: true
+        ))
+        // Write P-frame
+        try writer.writeSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xBB, count: 2000), duration: 3000, isSync: false
+        ))
+        // Write another keyframe
+        try writer.writeSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xCC, count: 4000), duration: 3000, isSync: true
+        ))
+
+        XCTAssertEqual(writer.bytesWritten, 11000)
+        XCTAssertEqual(writer.sampleCount(trackID: trackID), 3)
+
+        try writer.finalize()
+
+        // Read the written file and verify
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let reader = MP4Reader(data: data)
+        let boxes = try reader.readBoxes()
+
+        // File writer layout: ftyp + mdat + moov
+        XCTAssertEqual(boxes.count, 3)
+        XCTAssertEqual(boxes[0].type, "ftyp")
+        XCTAssertEqual(boxes[1].type, "mdat")
+        XCTAssertEqual(boxes[2].type, "moov")
+
+        // Verify mdat has correct data size
+        XCTAssertEqual(boxes[1].data.count, 11000)
+    }
+
+    func testFileWriterAudioAndVideo() throws {
+        let path = tempDir + "av.mp4"
+        let writer = try MP4FileWriter(path: path)
+        let videoTrackID = writer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 1280, height: 720, timescale: 90000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x64, 0x00, 0x1E])
+        ))
+        let audioTrackID = writer.addAudioTrack(config: MP4AudioTrackConfig(
+            sampleRate: 44100, channelCount: 2, timescale: 44100, codec: "mp4a",
+            decoderConfig: Data([0x12, 0x10])
+        ))
+
+        // Write interleaved samples
+        try writer.writeSample(trackID: videoTrackID, sample: MP4Sample(
+            data: Data(repeating: 0x11, count: 3000), duration: 3000, isSync: true
+        ))
+        try writer.writeSample(trackID: audioTrackID, sample: MP4Sample(
+            data: Data(repeating: 0xAA, count: 256), duration: 1024
+        ))
+        try writer.writeSample(trackID: videoTrackID, sample: MP4Sample(
+            data: Data(repeating: 0x22, count: 1500), duration: 3000, isSync: false
+        ))
+        try writer.writeSample(trackID: audioTrackID, sample: MP4Sample(
+            data: Data(repeating: 0xBB, count: 256), duration: 1024
+        ))
+
+        try writer.finalize()
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let reader = MP4Reader(data: data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes.count, 3)
+
+        // moov should have 2 traks
+        let moov = boxes[2]
+        XCTAssertEqual(moov.type, "moov")
+        let moovReader = MP4Reader(data: moov.data)
+        let moovChildren = try moovReader.readBoxes()
+        XCTAssertEqual(moovChildren.count, 3) // mvhd + 2 trak
+
+        // mdat should have all data
+        XCTAssertEqual(boxes[1].data.count, 3000 + 256 + 1500 + 256)
+    }
+
+    func testFileWriterChunkOffsetsCorrect() throws {
+        let path = tempDir + "offsets.mp4"
+        let writer = try MP4FileWriter(path: path)
+        let trackID = writer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+
+        let sizes = [100, 200, 300]
+        for (i, size) in sizes.enumerated() {
+            try writer.writeSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: UInt8(i), count: size),
+                duration: 1000, isSync: i == 0
+            ))
+        }
+
+        try writer.finalize()
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let reader = MP4Reader(data: data)
+
+        // Navigate to stco in the moov box
+        let boxes = try reader.readBoxes()
+        let moov = boxes.first(where: { $0.type == "moov" })!
+        let moovReader = MP4Reader(data: moov.data)
+        let trak = try moovReader.readBoxes().first(where: { $0.type == "trak" })!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stco = try stblReader.readBoxes().first(where: { $0.type == "stco" })!
+
+        let ba = ByteArray(data: stco.data)
+        _ = try ba.readUInt32() // version+flags
+        let count = try ba.readUInt32()
+        XCTAssertEqual(count, 3)
+
+        let offset1 = try ba.readUInt32()
+        let offset2 = try ba.readUInt32()
+        let offset3 = try ba.readUInt32()
+
+        // Verify offsets are sequential with correct gaps
+        XCTAssertEqual(offset2 - offset1, 100)
+        XCTAssertEqual(offset3 - offset2, 200)
+
+        // Verify the offsets actually point to correct data in the file
+        XCTAssertEqual(data[Int(offset1)], 0x00)
+        XCTAssertEqual(data[Int(offset2)], 0x01)
+        XCTAssertEqual(data[Int(offset3)], 0x02)
+    }
+
+    func testFileWriterAutoHeader() throws {
+        let path = tempDir + "auto.mp4"
+        let writer = try MP4FileWriter(path: path)
+        let trackID = writer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+
+        // writeSample should auto-write header
+        try writer.writeSample(trackID: trackID, sample: MP4Sample(
+            data: Data([0x01, 0x02, 0x03]),
+            duration: 1000, isSync: true
+        ))
+        try writer.finalize()
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let reader = MP4Reader(data: data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes[0].type, "ftyp")
+        XCTAssertEqual(boxes[1].type, "mdat")
+    }
+
+    func testFileWriterVsMuxerConsistency() throws {
+        // The same samples should produce equivalent moov boxes
+        // (offsets will differ due to different file layouts, but structure should match)
+        let path = tempDir + "compare.mp4"
+
+        let videoConfig = MP4VideoTrackConfig(
+            width: 640, height: 480, timescale: 30000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x42, 0x00, 0x0A])
+        )
+        let samples = [
+            MP4Sample(data: Data(repeating: 0x11, count: 500), duration: 1000, isSync: true),
+            MP4Sample(data: Data(repeating: 0x22, count: 300), duration: 1000, isSync: false),
+            MP4Sample(data: Data(repeating: 0x33, count: 400), duration: 1000, isSync: true),
+        ]
+
+        // In-memory muxer
+        let muxer = MP4Muxer()
+        let muxerTrackID = muxer.addVideoTrack(config: videoConfig)
+        for s in samples { muxer.addSample(trackID: muxerTrackID, sample: s) }
+        let muxerData = muxer.finalize()
+
+        // File writer
+        let writer = try MP4FileWriter(path: path)
+        let writerTrackID = writer.addVideoTrack(config: videoConfig)
+        for s in samples { try writer.writeSample(trackID: writerTrackID, sample: s) }
+        try writer.finalize()
+        let writerData = try Data(contentsOf: URL(fileURLWithPath: path))
+
+        // Both should parse successfully
+        let muxerBoxes = try MP4Reader(data: muxerData).readBoxes()
+        let writerBoxes = try MP4Reader(data: writerData).readBoxes()
+
+        // Same number of boxes
+        XCTAssertEqual(muxerBoxes.count, 3)
+        XCTAssertEqual(writerBoxes.count, 3)
+
+        // Muxer: ftyp + moov + mdat, Writer: ftyp + mdat + moov
+        XCTAssertEqual(muxerBoxes[0].type, "ftyp")
+        XCTAssertEqual(writerBoxes[0].type, "ftyp")
+
+        // Same mdat content size
+        let muxerMdat = muxerBoxes.first(where: { $0.type == "mdat" })!
+        let writerMdat = writerBoxes.first(where: { $0.type == "mdat" })!
+        XCTAssertEqual(muxerMdat.data.count, writerMdat.data.count)
+        XCTAssertEqual(muxerMdat.data.count, 1200) // 500 + 300 + 400
+
+        // Both moov have same structure
+        let muxerMoov = muxerBoxes.first(where: { $0.type == "moov" })!
+        let writerMoov = writerBoxes.first(where: { $0.type == "moov" })!
+        let muxerMoovChildren = try MP4Reader(data: muxerMoov.data).readBoxes()
+        let writerMoovChildren = try MP4Reader(data: writerMoov.data).readBoxes()
+        XCTAssertEqual(muxerMoovChildren.map { $0.type }, writerMoovChildren.map { $0.type })
+    }
+
+    func testRelocateMoov() throws {
+        let path = tempDir + "faststart.mp4"
+        let writer = try MP4FileWriter(path: path)
+        let trackID = writer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 1920, height: 1080, timescale: 90000, codec: "avc1",
+            decoderConfig: Data([0x01, 0x64, 0x00, 0x1E])
+        ))
+
+        // Write several samples
+        for i in 0..<10 {
+            try writer.writeSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: UInt8(i), count: 500),
+                duration: 3000, isSync: i % 5 == 0
+            ))
+        }
+        try writer.finalize()
+
+        // Before relocation: ftyp + mdat + moov
+        let dataBefore = try Data(contentsOf: URL(fileURLWithPath: path))
+        let boxesBefore = try MP4Reader(data: dataBefore).readBoxes()
+        XCTAssertEqual(boxesBefore[0].type, "ftyp")
+        XCTAssertEqual(boxesBefore[1].type, "mdat")
+        XCTAssertEqual(boxesBefore[2].type, "moov")
+
+        // Relocate moov
+        try MP4FileWriter.relocateMoov(path: path)
+
+        // After relocation: ftyp + moov + mdat
+        let dataAfter = try Data(contentsOf: URL(fileURLWithPath: path))
+        let boxesAfter = try MP4Reader(data: dataAfter).readBoxes()
+        XCTAssertEqual(boxesAfter[0].type, "ftyp")
+        XCTAssertEqual(boxesAfter[1].type, "moov")
+        XCTAssertEqual(boxesAfter[2].type, "mdat")
+
+        // Verify chunk offsets are still correct after relocation
+        let moov = boxesAfter[1]
+        let moovReader = MP4Reader(data: moov.data)
+        let trak = try moovReader.readBoxes().first(where: { $0.type == "trak" })!
+        let trakReader = MP4Reader(data: trak.data)
+        let mdia = try trakReader.readBoxes().first(where: { $0.type == "mdia" })!
+        let mdiaReader = MP4Reader(data: mdia.data)
+        let minf = try mdiaReader.readBoxes().first(where: { $0.type == "minf" })!
+        let minfReader = MP4Reader(data: minf.data)
+        let stbl = try minfReader.readBoxes().first(where: { $0.type == "stbl" })!
+        let stblReader = MP4Reader(data: stbl.data)
+        let stco = try stblReader.readBoxes().first(where: { $0.type == "stco" })!
+
+        let ba = ByteArray(data: stco.data)
+        _ = try ba.readUInt32() // version+flags
+        let count = try ba.readUInt32()
+        XCTAssertEqual(count, 10)
+
+        // Verify first sample offset points to correct data
+        let firstOffset = try ba.readUInt32()
+        XCTAssertEqual(dataAfter[Int(firstOffset)], 0x00) // first sample filled with 0x00
+    }
+
+    func testRelocateMoovAlreadyFront() throws {
+        // In-memory muxer already puts moov before mdat
+        let path = tempDir + "already.mp4"
+        let muxer = MP4Muxer()
+        let trackID = muxer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 320, height: 240, timescale: 30000, codec: "avc1"
+        ))
+        muxer.addSample(trackID: trackID, sample: MP4Sample(
+            data: Data(repeating: 0xFF, count: 100), duration: 1000, isSync: true
+        ))
+        let data = muxer.finalize()
+        try data.write(to: URL(fileURLWithPath: path))
+
+        // relocateMoov should be a no-op
+        try MP4FileWriter.relocateMoov(path: path)
+
+        let dataAfter = try Data(contentsOf: URL(fileURLWithPath: path))
+        XCTAssertEqual(data, dataAfter) // File unchanged
+    }
+
+    func testFileWriterManyFrames() throws {
+        // Simulate writing a longer file to verify memory isn't blown up
+        let path = tempDir + "long.mp4"
+        let writer = try MP4FileWriter(path: path)
+        let trackID = writer.addVideoTrack(config: MP4VideoTrackConfig(
+            width: 1920, height: 1080, timescale: 90000, codec: "avc1"
+        ))
+
+        let frameCount = 1000
+        for i in 0..<frameCount {
+            try writer.writeSample(trackID: trackID, sample: MP4Sample(
+                data: Data(repeating: UInt8(i & 0xFF), count: 1000),
+                duration: 3000, isSync: i % 30 == 0
+            ))
+        }
+
+        XCTAssertEqual(writer.bytesWritten, UInt64(frameCount * 1000))
+        try writer.finalize()
+
+        // Verify the file is readable
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let reader = MP4Reader(data: data)
+        let boxes = try reader.readBoxes()
+        XCTAssertEqual(boxes.count, 3)
+        XCTAssertEqual(boxes[1].data.count, frameCount * 1000)
+    }
+}
